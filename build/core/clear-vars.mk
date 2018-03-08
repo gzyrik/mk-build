@@ -23,3 +23,8 @@ $(call clear-vars, $(filter-out LOCAL_PATH,$(modules-LOCALS:%=LOCAL_%)))
 
 # strip LOCAL_PATH
 LOCAL_PATH := $(strip $(LOCAL_PATH))
+
+# Note: windows maybe use short commands mode:cc link ar asm rs
+#ifeq ($(HOST_OS),windows)
+#LOCAL_SHORT_COMMANDS := link
+#endif

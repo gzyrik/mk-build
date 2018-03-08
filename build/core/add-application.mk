@@ -63,7 +63,7 @@ endif
 ifeq (null,$(APP_PROJECT_PATH))
 
 ifndef APP_PLATFORM
-    APP_PLATFORM := android-3
+    APP_PLATFORM := $(NDK_PLATFORM_PREFIX)-3
     $(call ndk_log,  Defaulted to APP_PLATFORM=$(APP_PLATFORM))
 endif
 
@@ -84,9 +84,14 @@ ifndef APP_PLATFORM
         APP_PLATFORM := $(strip $(shell $(HOST_AWK) -f $(BUILD_AWK)/extract-platform.awk $(call host-path,$(_local_props))))
         $(call ndk_log,  Found APP_PLATFORM=$(APP_PLATFORM) in $(_local_props))
     else
-        APP_PLATFORM := android-3
+        APP_PLATFORM := $(NDK_PLATFORM_PREFIX)-3
         $(call ndk_log,  Defaulted to APP_PLATFORM=$(APP_PLATFORM))
     endif
+endif
+
+ifeq ($(APP_PLATFORM),android-L)
+$(call __ndk_warning,WARNING: android-L is renamed as android-21)
+override APP_PLATFORM := android-21
 endif
 
 endif # APP_PROJECT_PATH == null
@@ -94,50 +99,44 @@ endif # APP_PROJECT_PATH == null
 # SPECIAL CASES:
 # 1) android-6 and android-7 are the same thing as android-5
 # 2) android-10 and android-11 are the same thing as android-9
-# 3) android-20 and up are the same thing as android-19
+# 3) android-20 is the same thing as android-19
+# 4) android-21 and up are the same thing as android-21
 # ADDITIONAL CASES for remote server where total number of files is limited
-# 4) android-13 is the same thing as android-12
-# 5) android-15 is the same thing as android-14
-# 6) android-17 is the same thing as android-16
-APP_PLATFORM_LEVEL := $(strip $(subst android-,,$(APP_PLATFORM)))
-ifneq ($(APP_PLATFORM_LEVEL),$(NDK_PREVIEW_LEVEL))
-
+# 5) android-13 is the same thing as android-12
+# 6) android-15 is the same thing as android-14
+# 7) android-17 is the same thing as android-16
+APP_PLATFORM_LEVEL := $(strip $(subst $(NDK_PLATFORM_PREFIX)-,,$(APP_PLATFORM)))
+ifeq (android,$(NDK_PLATFORM_PREFIX))
 ifneq (,$(filter 6 7,$(APP_PLATFORM_LEVEL)))
     override APP_PLATFORM := android-5
 endif
 ifneq (,$(filter 10 11,$(APP_PLATFORM_LEVEL)))
     override APP_PLATFORM := android-9
 endif
-ifneq (,$(call gt,$(APP_PLATFORM_LEVEL),19))
+ifneq (,$(filter 20,$(APP_PLATFORM_LEVEL)))
     override APP_PLATFORM := android-19
 endif
-
-#ifneq (,$(filter 13,$(APP_PLATFORM_LEVEL)))
-#    override APP_PLATFORM := android-12
-#endif
-#ifneq (,$(filter 15,$(APP_PLATFORM_LEVEL)))
-#    override APP_PLATFORM := android-14
-#endif
-#ifneq (,$(filter 17,$(APP_PLATFORM_LEVEL)))
-#    override APP_PLATFORM := android-16
+#ifneq (,$(call gt,$(APP_PLATFORM_LEVEL),21))
+#    override APP_PLATFORM := android-21
 #endif
 
 ifneq ($(strip $(subst android-,,$(APP_PLATFORM))),$(APP_PLATFORM_LEVEL))
     $(call ndk_log,  Adjusting APP_PLATFORM android-$(APP_PLATFORM_LEVEL) to $(APP_PLATFORM))
 endif
 
-# If APP_PIE isn't defined, set it to true for android-$(NDK_PIE_PLATFORM_LEVEL) and above
+# If APP_PIE isn't defined, set it to true for android-$(NDK_FIRST_PIE_PLATFORM_LEVEL) and above
 #
 APP_PIE := $(strip $(APP_PIE))
 $(call ndk_log,  APP_PIE is $(APP_PIE))
 ifndef APP_PIE
-    ifneq (,$(call gte,$(APP_PLATFORM_LEVEL),$(NDK_PIE_PLATFORM_LEVEL)))
+    ifneq (,$(call gte,$(APP_PLATFORM_LEVEL),$(NDK_FIRST_PIE_PLATFORM_LEVEL)))
         APP_PIE := true
         $(call ndk_log,  Enabling -fPIE)
     else
         APP_PIE := false
     endif
 endif
+endif # NDK_PLATFORM_PREFIX == android
 
 # Check that the value of APP_PLATFORM corresponds to a known platform
 # If not, we're going to use the max supported platform value.
@@ -145,12 +144,13 @@ endif
 _bad_platform := $(strip $(filter-out $(NDK_ALL_PLATFORMS),$(APP_PLATFORM)))
 ifdef _bad_platform
     $(call ndk_log,Application $(_app) targets unknown platform '$(_bad_platform)')
-    override APP_PLATFORM := android-$(NDK_MAX_PLATFORM_LEVEL)
+    override APP_PLATFORM := $(NDK_PLATFORM_PREFIX)-$(NDK_MAX_PLATFORM_LEVEL)
     $(call ndk_log,Switching to $(APP_PLATFORM))
+else
+    $(call ndk_log,Using specified platform: $(APP_PLATFORM))
 endif
 
 ifneq (null,$(APP_PROJECT_PATH))
-ifneq ($(APP_PLATFORM),android-$(NDK_PREVIEW_LEVEL))
 
 # Check platform level (after adjustment) against android:minSdkVersion in AndroidManifest.xml
 #
@@ -164,14 +164,8 @@ ifdef APP_MANIFEST
     endif
   endif
 endif
-endif
 
 endif # APP_PROJECT_PATH == null
-
-else
-# $(APP_PLATFORM_LEVEL) = $(NDK_PREVIEW_LEVEL)
-  APP_PIE := true
-endif # $(APP_PLATFORM_LEVEL) != $(NDK_PREVIEW_LEVEL)
 
 # Check that the value of APP_ABI corresponds to known ABIs
 # 'all' is a special case that means 'all supported ABIs'
@@ -186,7 +180,11 @@ endif # $(APP_PLATFORM_LEVEL) != $(NDK_PREVIEW_LEVEL)
 APP_ABI := $(subst $(comma),$(space),$(strip $(APP_ABI)))
 ifndef APP_ABI
     # Default ABI is 'armeabi'
-    APP_ABI := armeabi
+    ifeq ($(NDK_PLATFORM_PREFIX), $(HOST_OS))
+        APP_ABI := $(HOST_ARCH_ABI)
+    else
+        APP_ABI := armeabi
+    endif
 endif
 ifneq ($(APP_ABI),all)
     _bad_abis := $(strip $(filter-out $(NDK_ALL_ABIS),$(APP_ABIS)))
@@ -199,7 +197,7 @@ ifneq ($(APP_ABI),all)
 endif
 
 # If APP_BUILD_SCRIPT is defined, check that the file exists.
-# If undefined, look in $(APP_PROJECT_PATH)/jni/Android.mk
+# If undefined, look in $(APP_PROJECT_PATH)/$(NDK_PROJECT_MAKEFILE)
 #
 APP_BUILD_SCRIPT := $(strip $(APP_BUILD_SCRIPT))
 ifdef APP_BUILD_SCRIPT
@@ -209,22 +207,23 @@ ifdef APP_BUILD_SCRIPT
         $(call __ndk_error,Aborting...)
     endif
     APP_BUILD_SCRIPT := $(_build_script)
-    $(call ndk_log,  Using build script $(APP_BUILD_SCRIPT))
+    NDK_PLATFORM_MAKEFILE := $(notdir $(APP_BUILD_SCRIPT))
+    $(call ndk_log,  Using build script $(APP_BUILD_SCRIPT) NDK_PLATFORM_MAKEFILE=$(NDK_PLATFORM_MAKEFILE))
 else
     ifeq (null,$(APP_PROJECT_PATH))
       $(call __ndk_info,NDK_PROJECT_PATH==null.  Please explicitly set APP_BUILD_SCRIPT.)
       $(call __ndk_error,Aborting.)
     endif
 
-    _build_script := $(strip $(wildcard $(APP_PROJECT_PATH)/jni/Android.mk))
+    _build_script := $(strip $(wildcard $(APP_PROJECT_PATH)/$(NDK_PROJECT_MAKEFILE)))
     ifndef _build_script
-        $(call __ndk_info,There is no Android.mk under $(APP_PROJECT_PATH)/jni)
+        $(call __ndk_info,There is no $(NDK_PROJECT_MAKEFILE) under $(APP_PROJECT_PATH))
         $(call __ndk_info,If this is intentional, please define APP_BUILD_SCRIPT to point)
         $(call __ndk_info,to a valid NDK build script.)
         $(call __ndk_error,Aborting...)
     endif
     APP_BUILD_SCRIPT := $(_build_script)
-    $(call ndk_log,  Defaulted to APP_BUILD_SCRIPT=$(APP_BUILD_SCRIPT))
+    $(call ndk_log,Defaulted to APP_BUILD_SCRIPT=$(APP_BUILD_SCRIPT))
 endif
 
 # Determine whether the application should be debuggable.
@@ -292,9 +291,15 @@ APP_LDFLAGS  := $(strip $(APP_LDFLAGS))
 # otherwise, check that the name is correct.
 APP_STL := $(strip $(APP_STL))
 ifndef APP_STL
+    ifeq (android,$(NDK_PLATFORM_PREFIX))
     APP_STL := system
+    endif
 else
+    ifeq (ios,$(NDK_PLATFORM_PREFIX))
+    APP_STL := 
+    else
     $(call ndk-stl-check,$(APP_STL))
+    endif
 endif
 
 $(if $(call get,$(_map),defined),\

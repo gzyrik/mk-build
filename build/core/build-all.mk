@@ -48,6 +48,8 @@ BUILD_SHARED_LIBRARY      := $(BUILD_SYSTEM)/build-shared-library.mk
 BUILD_EXECUTABLE          := $(BUILD_SYSTEM)/build-executable.mk
 PREBUILT_SHARED_LIBRARY   := $(BUILD_SYSTEM)/prebuilt-shared-library.mk
 PREBUILT_STATIC_LIBRARY   := $(BUILD_SYSTEM)/prebuilt-static-library.mk
+BUILD_JAVA_LIBRARY        := $(BUILD_SYSTEM)/build-java-library.mk
+PREBUILT_JAVA_LIBRARY     := $(BUILD_SYSTEM)/prebuilt-java-library.mk
 
 ANDROID_MK_INCLUDED := \
   $(CLEAR_VARS) \
@@ -138,15 +140,43 @@ executables: $(EXECUTABLES)
 libraries: static_libraries shared_libraries
 
 clean-host-intermediates:
-	$(hide) $(call host-rm,$(HOST_EXECUTABLES) $(HOST_STATIC_LIBRARIES))
+#$(hide) $(call host-rm,$(HOST_EXECUTABLES) $(HOST_STATIC_LIBRARIES))
 
 clean-intermediates: clean-host-intermediates
-	$(hide) $(call host-rm,$(EXECUTABLES) $(STATIC_LIBRARIES) $(SHARED_LIBRARIES))
+#$(hide) $(call host-rm,$(EXECUTABLES) $(STATIC_LIBRARIES) $(SHARED_LIBRARIES))
 
 ifeq ($(HOST_OS),cygwin)
 clean: clean-dependency-converter
 endif
-	
+
 # include dependency information
 ALL_DEPENDENCY_DIRS := $(patsubst %/,%,$(sort $(ALL_DEPENDENCY_DIRS)))
 -include $(wildcard $(ALL_DEPENDENCY_DIRS:%=%/*.d))
+
+NDK_CONVERAGE_OBJ_DIRS := $(call module-get-all-coverage-objs-dir)
+ifdef NDK_CONVERAGE_OBJ_DIRS
+NDK_CONVERAGE_EXES := $(call map,module-get-coverage-installed,$(WANTED_MODULES))
+endif
+ifdef NDK_CONVERAGE_EXES
+cov: PRIVATE_DIRS := $(addprefix -d ,$(NDK_CONVERAGE_OBJ_DIRS))
+cov: PRIVATE_TMP  := $(TARGET_OUT)/coverage.origin
+cov: PRIVATE_INFO := $(TARGET_OUT)/coverage.strip
+cov: PRIVATE_HTML := $(NDK_PROJECT_PATH)/coverage
+cov: PRIVATE_EXES := cd $(NDK_APP_DST_DIR) && $(call merge,&&,$(addprefix ./,$(notdir $(NDK_CONVERAGE_EXES))))
+cov: PRIVATE_PATTERN := $(addsuffix /\*,$(foreach d,$(call module-get-all-coverage-local-path),$(shell cd $d && pwd)))
+cov: PRIVATE_LCOV := $(NDK_ROOT)/lcov -q
+cov: PRIVATE_GENHTML := $(NDK_ROOT)/genhtml -q
+cov: installed_modules
+	$(call host-echo-build-step,coverage,clean) "Reset all execution counts to zero"
+	$(hide) $(PRIVATE_LCOV) -z $(PRIVATE_DIRS)
+	$(call host-echo-build-step,coverage,run) "Run all coverage tests"
+	$(hide) $(PRIVATE_EXES)
+	$(call host-echo-build-step,coverage,capture) "Capture coverage data"
+	$(hide) $(PRIVATE_LCOV) $(PRIVATE_DIRS) -c -o $(PRIVATE_TMP)
+	$(call host-echo-build-step,coverage,extract) "Extract files matching PATTERN from FILE"
+	$(hide) $(PRIVATE_LCOV) -e $(PRIVATE_TMP) $(PRIVATE_PATTERN) -o $(PRIVATE_INFO)
+	$(call host-echo-build-step,coverage,html) "Create HTML output for coverage data"
+	$(hide) $(PRIVATE_GENHTML) -o $(PRIVATE_HTML) $(PRIVATE_INFO)
+else
+cov:
+endif

@@ -18,16 +18,34 @@
 #
 
 $(call assert-defined,TARGET_PLATFORM TARGET_ARCH TARGET_ARCH_ABI)
-$(call assert-defined,NDK_APPS NDK_APP_STL)
+$(call assert-defined,NDK_APPS)
 
-LLVM_VERSION_LIST := 2.6 2.7 2.8 2.9 3.0 3.1 3.2 3.3 3.4
-NDK_64BIT_TOOLCHAIN_LIST := clang3.4 4.9
+LLVM_VERSION_LIST := 2.6 2.7 2.8 2.9 3.0 3.1 3.2 3.3 3.4 3.5 3.6
+NDK_64BIT_TOOLCHAIN_LIST := clang3.6 clang3.5 clang3.4 4.9
 
 # Check that we have a toolchain that supports the current ABI.
 # NOTE: If NDK_TOOLCHAIN is defined, we're going to use it.
 #
+#For compatibility
+ifneq (,$(call lt,$(NDK_NEED_VERSION),10))
+    ifneq (,$(filter arm-linux-androideabi-4.4.3 llvm-clang-5.0 x86-clang3.0 llvm-clang-3.0,$(NDK_TOOLCHAIN)))
+        $(call __ndk_warning,'NDK_TOOLCHAIN=$(NDK_TOOLCHAIN)' is obsoleted)
+        override NDK_TOOLCHAIN :=
+    endif
+endif
+
 ifndef NDK_TOOLCHAIN
     TARGET_TOOLCHAIN_LIST := $(strip $(sort $(NDK_ABI.$(TARGET_ARCH_ABI).toolchains)))
+    ifneq (,$(filter darwin ios,$(NDK_PLATFORM_PREFIX)))
+    TARGET_TOOLCHAIN_LIST := $(filter %-clang,$(TARGET_TOOLCHAIN_LIST))
+    endif
+
+    ifneq (,$(filter linux,$(NDK_PLATFORM_PREFIX)))
+    TARGET_TOOLCHAIN_LIST := $(filter %-gcc,$(TARGET_TOOLCHAIN_LIST))
+    endif
+
+    ifneq (,$(filter android,$(NDK_PLATFORM_PREFIX)))
+    TARGET_TOOLCHAIN_LIST := $(filter-out %-clang,$(TARGET_TOOLCHAIN_LIST))
 
     # Filter out the Clang toolchain, so that we can keep GCC as the default
     # toolchain.
@@ -36,8 +54,8 @@ ifndef NDK_TOOLCHAIN
             $(filter-out %-clang$(_ver),$(TARGET_TOOLCHAIN_LIST))))
 
     ifeq (,$(findstring 64,$(TARGET_ARCH_ABI)))
-      # Filter out 4.7, 4.8 and 4.9 which are newer than the defaultat this moment
-      __filtered_toolchain_list := $(filter-out %4.7 %4.8 %4.8l %4.9 %4.9l,$(TARGET_TOOLCHAIN_LIST))
+      # Filter out 4.6 and 4.7 which are deprecated
+      __filtered_toolchain_list := $(filter-out %4.6 %4.7,$(TARGET_TOOLCHAIN_LIST))
       ifdef __filtered_toolchain_list
           TARGET_TOOLCHAIN_LIST := $(__filtered_toolchain_list)
       endif
@@ -52,8 +70,9 @@ ifndef NDK_TOOLCHAIN
         $(call __ndk_info,a set of the following values: $(NDK_ALL_ABIS))
         $(call __ndk_error,Aborting)
     endif
+    endif # NDK_PLATFORM_PREFIX is android
     # Select the last toolchain from the sorted list.
-    # For now, this is enough to select by default gcc4.6 for 32-bit, and 4.9 for 64-bit, the the
+    # For now, this is enough to select by default gcc4.8 for 32-bit, and 4.9 for 64-bit, the the
     # latest llvm if no gcc
     ifneq (,$(filter-out llvm-%,$(TARGET_TOOLCHAIN_LIST)))
         TARGET_TOOLCHAIN := $(firstword $(TARGET_TOOLCHAIN_LIST))
@@ -121,7 +140,10 @@ TARGET_ABI := $(TARGET_PLATFORM)-$(TARGET_ARCH_ABI)
 # SYSROOT_LIB points to libraries and object files used for linking
 # the generated target files properly.
 #
+SYSROOT_INC := $(NDK_PLATFORMS_ROOT)/$(TARGET_PLATFORM)/arch-$(TARGET_ARCH_ABI)
+ifeq (,$(strip $(wildcard $(SYSROOT_INC))))
 SYSROOT_INC := $(NDK_PLATFORMS_ROOT)/$(TARGET_PLATFORM)/arch-$(TARGET_ARCH)
+endif
 SYSROOT_LINK := $(SYSROOT_INC)
 
 TARGET_PREBUILT_SHARED_LIBRARIES :=
@@ -172,6 +194,7 @@ clean-installed-binaries::
 NDK_APP_GDBSERVER := $(NDK_APP_DST_DIR)/gdbserver
 NDK_APP_GDBSETUP := $(NDK_APP_DST_DIR)/gdb.setup
 
+ifeq (android,$(NDK_PLATFORM_PREFIX))
 ifeq ($(NDK_APP_DEBUGGABLE),true)
 ifeq ($(TARGET_SONAME_EXTENSION),.so)
 
@@ -201,6 +224,7 @@ $(NDK_APP_GDBSETUP): PRIVATE_SRC_DIRS := $(SYSROOT_INC)/usr/include
 $(NDK_APP_GDBSETUP):
 	$(call host-echo-build-step,$(PRIVATE_ABI),Gdbsetup) "$(call pretty-dir,$(PRIVATE_DST))"
 	$(hide) $(HOST_ECHO) "set solib-search-path $(call host-path,$(PRIVATE_SOLIB_PATH))" > $(PRIVATE_DST)
+	$(hide) $(HOST_ECHO) "source $(call host-path,$(NDK_ROOT)/prebuilt/common/gdb/common.setup)" >> $(PRIVATE_DST)
 	$(hide) $(HOST_ECHO) "directory $(call host-path,$(call remove-duplicates,$(PRIVATE_SRC_DIRS)))" >> $(PRIVATE_DST)
 
 $(call generate-file-dir,$(NDK_APP_GDBSETUP))
@@ -209,17 +233,22 @@ $(call generate-file-dir,$(NDK_APP_GDBSETUP))
 $(NDK_APP_GDBSETUP): clean-installed-binaries
 endif
 endif
+endif # NDK_PLATFORM_PREFIX == android
 
 # free the dictionary of LOCAL_MODULE definitions
 $(call modules-clear)
 
+ifneq ($(NDK_APP_STL),)
 $(call ndk-stl-select,$(NDK_APP_STL))
+endif
 
 # now parse the Android.mk for the application, this records all
 # module declarations, but does not populate the dependency graph yet.
 include $(NDK_APP_BUILD_SCRIPT)
 
+ifneq ($(NDK_APP_STL),)
 $(call ndk-stl-add-dependencies,$(NDK_APP_STL))
+endif
 
 # recompute all dependencies between modules
 $(call modules-compute-dependencies)
@@ -232,8 +261,9 @@ endif
 # now, really build the modules, the second pass allows one to deal
 # with exported values
 $(foreach __pass2_module,$(__ndk_modules),\
+    $(if $(call module-is-java-library,$(__pass2_module)),,\
     $(eval LOCAL_MODULE := $(__pass2_module))\
-    $(eval include $(BUILD_SYSTEM)/build-binary.mk)\
+    $(eval include $(BUILD_SYSTEM)/build-binary.mk))\
 )
 
 # Now compute the closure of all module dependencies.

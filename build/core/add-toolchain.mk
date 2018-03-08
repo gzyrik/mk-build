@@ -42,6 +42,14 @@ TOOLCHAIN_ABIS := $(TOOLCHAIN_ARCH) $(NDK_KNOWN_ABIS:%=$(TOOLCHAIN_ARCH)%) $(NDK
 endif
 endif
 
+_dir  := $(patsubst %/,%,$(dir $(_config_mk)))
+ifneq (,$(wildcard $(_dir)/prebuilt/*))
+    ifeq (,$(wildcard $(call host-prebuilt-tag,$(_dir))/*))
+        TOOLCHAIN_ABIS :=
+        TOOLCHAIN_ARCH :=
+    endif
+endif
+
 ifeq ($(TOOLCHAIN_ABIS)$(TOOLCHAIN_ARCH),)
 # Ignore if both TOOLCHAIN_ABIS and TOOLCHAIN_ARCH are not defined
 else
@@ -53,7 +61,6 @@ $(call check-required-vars,$(NDK_TOOLCHAIN_VARS_REQUIRED),$(_config_mk))
 $(call assert-defined, _config_mk)
 
 # Now record the toolchain-specific information
-_dir  := $(patsubst %/,%,$(dir $(_config_mk)))
 _name := $(notdir $(_dir))
 _arch := $(TOOLCHAIN_ARCH)
 _abis := $(TOOLCHAIN_ABIS)

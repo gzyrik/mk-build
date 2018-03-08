@@ -1,0 +1,552 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN" "http://www.w3.org/TR/html4/loose.dtd">
+<html>
+<head>
+<link rel="Stylesheet" type="text/css" href="style.css">
+<title>mk-build 文档1.0</title>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+</head>
+<body>
+
+<h1>mk-build 文档1.0</h1>
+<div class="toc">
+<ul>
+<li><a href="#toc_1">前言</a>
+<ul>
+<li><a href="#toc_1.1">读者对象</a>
+<li><a href="#toc_1.2">设计目标</a>
+<li><a href="#toc_1.3">功能概述</a>
+</ul>
+<li><a href="#toc_2">使用简介</a>
+<ul>
+<li><a href="#toc_2.1">安装配置</a>
+<li><a href="#toc_2.2">运行工具脚本</a>
+<li><a href="#toc_2.3">支持的命令参数</a>
+<li><a href="#toc_2.4">编译目录结构</a>
+</ul>
+<li><a href="#toc_3">配置脚本的语法</a>
+<ul>
+<li><a href="#toc_3.1">模块的定义语法</a>
+<ul>
+<li><a href="#toc_3.1.1">简单例子</a>
+<li><a href="#toc_3.1.2">预定义的变量</a>
+<li><a href="#toc_3.1.3">模块定义变量</a>
+<ul>
+<li><a href="#toc_3.1.3.1">与NDK一致的标准变量</a>
+<li><a href="#toc_3.1.3.2">功能扩展的增强变量</a>
+<li><a href="#toc_3.1.3.3">全新定义的新增变量</a>
+</ul>
+</ul>
+<li><a href="#toc_3.2">全局定义语法</a>
+</ul>
+<li><a href="#toc_4">注意的问题</a>
+</ul>
+</div>
+
+<hr />
+<h1 id="toc_1">前言</h1>
+<p>
+本文是菊风系统软件公司编译工具 mk-build 的使用文档。
+</p>
+
+<h2 id="toc_1.1">读者对象</h2>
+<p>
+本文适合的读者对象是需要编译 Android, iOS, darwin, linux等目标代码的开发者.
+</p>
+
+<h2 id="toc_1.2">设计目标</h2>
+<p>
+解决单个大型软件项目中C/C++文件的多平台编译, 自动化编译, 增量编译.
+</p>
+
+<h2 id="toc_1.3">功能概述</h2>
+<p>
+mk-build 是在 Google NDK 编译工具的基础上, 添加更多特有的功能, 并适应iOS, PC平台等多平台.
+本质是传统的Makefile脚本系统, 因此必须符合Makefile语法定义, 可以使用所有Makefile的标准函数.
+主要功能和优点有:
+</p>
+<ol>
+<li>
+完全兼容标准的 NDK
+
+<li>
+实现多种交叉编译平台
+
+<li>
+丰富的函数扩展
+
+<li>
+模块化的编译单元
+
+<li>
+自动处理文件依赖
+
+<li>
+自动处理模块依赖
+
+<li>
+增量化编译
+
+<li>
+并行化编译 
+
+<li>
+清晰的编译目录结构
+
+<li>
+可扩展的编译工具链与平台SDK
+
+</ol>
+<hr />
+<h1 id="toc_2">使用简介</h1>
+<h2 id="toc_2.1">安装配置</h2>
+<ol>
+<li>
+从git仓库获取工具包, 需要相应的SSH 用户权限, 以 rik.gong 用户为例: 
+<pre>
+  git clone ssh://rik.gong@192.168.0.251:29418/tool/mk-build mk-build
+</pre>
+
+<li>
+从Android 官方网站, 下载标准的NDK r10 工具包,并解压到mk-build目录.
+
+<ol>
+<li>
+linux, darwin平台,可以使用mk-build/install-mk-build.sh脚本,
+   从内部服务器下载android-ndk32-r10-*.tar.bz2
+
+<li>
+其它平台, 必须手工下载相应平台的 android-ndk32-r10-*.tar.bz2, 解压到 mk-build目录,
+   然后使用git命令, 复位工具包中的自定义修改
+<pre>
+    git reset --hard
+</pre>
+
+</ol>
+<li>
+若是需要编译iOS目标代码, 下载安装标准的 Xcode 及其相应的命令行工具包 commandline_tools_os_x_mavericks_for_xcode_*.dmg
+
+<li>
+若是需要编译Android的Java代码, 下载标准Android SDK中的android.jar放到mk-build目录中.
+  mk-build/install-mk-build.sh脚本, 已经从内部服务器下载android.jar
+
+<li>
+将mk-build 目录添加到环境变量 PATH 中, 方便从命令中执行脚本.
+
+<ol>
+<li>
+若是类Unix系统, 通常需要修改shell的配置文件, 例如, BASH需要修改~/.bash_profile 或~/.bash_rc
+
+<li>
+若是Windows, 直接在我的电脑中, 找到环境变量PATH并修改
+
+</ol>
+</ol>
+
+<h2 id="toc_2.2">运行工具脚本</h2>
+<p>
+可供开发者使用的脚本分三个:
+</p>
+<ol>
+<li>
+Androd的脚本工具 <strong>ndk-build</strong>.
+  在darwin, windows, linux中都可以使用.
+  自动查找当前 <strong>jni</strong> 目录中的Android.mk, Application.mk
+
+<li>
+iOS的脚本工具 <strong>ios-build</strong>.
+  只能在安装XCode后的darwin 中使用.
+  自动查找当前 <strong>ios</strong> 目录中的ios.mk, Application.mk
+
+<li>
+PC平台的通用脚本工具 <strong>mk-build</strong>.
+  可以在darwin, linux中使用.
+  自动查找当前 <strong>mk</strong> 目录中的 build.mk, Application.mk
+
+</ol>
+  
+<h2 id="toc_2.3">支持的命令参数</h2>
+<p>
+因为所有脚本由传统的GNU make处理,所以支持所有GNU make的命令参数.
+编译过程中的全局变量都可以通过 &lt;name&gt;=&lt;value&gt; 命令行参数的方式传递.
+</p>
+<ol>
+<li>
+clean 清除所有中间文件
+
+<li>
+V=1 编译过程中,显示执行的命令
+
+<li>
+-B  强制重新编译
+
+<li>
+-j &lt;num&gt; 开启多线程处理
+
+<li>
+NDK_LOG=1 显示内部的打印信息
+
+<li>
+NDK_DEBUG=1 编译调试版本
+
+<li>
+NDK_PROJECT_PATH=&lt;path&gt; 指定项目目录, 不再自动搜索
+
+<li>
+NDK_APPLICATION_MK=&lt;file&gt; 指定Application.mk文件,不再自动搜索
+
+<li>
+NDK_PROJECT_MAKEFILE=&lt;file&gt; 指定模块的定义文件,不再自动搜索
+
+<li>
+-C &lt;project&gt; 编译位于&lt;project&gt;目录的项目,而不必进入该目录
+
+</ol>
+
+<h2 id="toc_2.4">编译目录结构</h2>
+<ol>
+<li>
+libs 用于存放最终可安装的编译结果文件,例如.so文件,按不同ABI,创建各个子目录
+
+<li>
+obj 是临时目录, 存放编译的中间文件,按不同平台, 不同ABI, 是否Debug版, 创建各个子目录
+<pre>
+ ├─ios
+ │  ├─ ios.mk
+ │  └─ Application.mk
+ │
+ ├─jni
+ │  ├─ Android.mk
+ │  └─ Application.mk
+ │
+ ├─mk
+ │  ├─ build.mk
+ │  └─ Application.mk
+ │
+ ├─libs
+ │  ├─armeabi-v7a
+ │  ├─x86
+ │  ├─&lt;ABI...&gt;
+ │
+ └─obj
+    ├─android
+    │  ├─armeabi-v7a
+    │  │  ├─objs
+    │  │  │  ├─&lt;模块名1&gt;
+    │  │  │  ├─&lt;模块名2&gt;
+    │  │  │  ├─&lt;模块...&gt;
+    │  │  │
+    │  │  └─objs-debug
+    │  │     ├─&lt;模块名1&gt;
+    │  │     ├─&lt;模块名2&gt;
+    │  │     ├─&lt;模块...&gt;
+    │  │
+    │  ├─x86
+    │  │
+    │  ├─&lt;ABI...&gt;
+    │
+    ├─iPhoneOS
+    │
+    ├─&lt;平台...&gt;
+</pre>
+
+</ol>
+<hr />
+<h1 id="toc_3">配置脚本的语法</h1>
+<p>
+配置脚本的语法,完全兼容标准的NDK,
+因此可以参考 NDK Programmer's Guide, mk-build\docs\Programmers_Guide\html\index.html.
+编译系统的处理单元是模块, 配置脚本的主要任务就是定义各种模块.
+</p>
+
+<h2 id="toc_3.1">模块的定义语法</h2>
+<p>
+jni/Android.mk, ios/ios.mk, mk/build.mk 是各平台编译模块的定义文件,
+用变量 NDK_PROJECT_MAKEFILE 表示.
+实质上就是一个Makefile文件,但是会被编译系统多次读取分析,
+所以要尽量模块化,要避免全局变量.
+支持的模块类型有: 静态库, 动态库, 可执行文件
+</p>
+
+<h3 id="toc_3.1.1">简单例子</h3>
+<p>
+假设x86_64 darwin的mk目录中存在如下的build.mk和hello-jni.c, hello.c, libfoo.so文件,
+执行mk-build后,将在 libs\x86_64 中生成 libhello.so, libfoo.so文件
+</p>
+<pre>
+1.    LOCAL_PATH := $(call my-dir)
+2.
+3.    include $(CLEAR_VARS)
+4.
+5.    LOCAL_MODULE    := hello
+6.    LOCAL_SRC_FILES := hello-jni.c hello.c
+7.    LOCAL_SHARED_LIBRARIES := foo
+8.
+9.    include $(BUILD_SHARED_LIBRARY)
+10.  
+11.   include $(CLEAR_VARS)
+12.   LOCAL_MODULE := foo
+13.   LOCAL_SRC_FILES := libfoo.so
+14.   include $(PREBUILT_SHARED_LIBRARY)
+</pre>
+<p>
+所有 LOCAL_*开头的变量都是局部变量, 除了LOCAL_PATH, 其它都只能在模块定义中使用.
+</p>
+<ol>
+<li>
+第1行,调用函数,返回当前文件所在目录, 并赋值给 LOCAL_PATH
+
+<li>
+第3行,清空除了LOCAL_PATH之外的所有LOCAL_*开头的局部变量
+
+<li>
+第5行定义模块名称 LOCAL_MODULE
+
+<li>
+第6行定义模块需要的所有源文件列表 LOCAL_SRC_FILES
+
+<li>
+第7行定义模块依赖指定的动态库模块 foo
+
+<li>
+第8行定义模块最终生成是动态库
+
+<li>
+第11-14是已存在的动态库模块定义
+
+</ol>
+
+<h3 id="toc_3.1.2">预定义的变量</h3>
+<ol>
+<li>
+CLEAR_VARS
+  模块定义的开始语句, 用于清空除了LOCAL_PATH之外的所有LOCAL_*开头的局部变量.
+
+<li>
+BUILD_SHARED_LIBRARY
+  模块定义的结束语句, 用于定义需生成的动态库模块
+
+<li>
+BUILD_STATIC_LIBRARY
+  模块定义的结束语句, 用于定义需生成的静态库模块
+
+<li>
+PREBUILT_SHARED_LIBRARY
+  模块定义的结束语句, 用于定义已存在的动态库模块
+
+<li>
+PREBUILT_STATIC_LIBRARY
+  模块定义的结束语句, 用于定义已存在的静态库模块
+
+<li>
+NDK_ROOT
+  mk-build所在路径
+
+</ol>
+
+<h3 id="toc_3.1.3">模块定义变量</h3>
+<p>
+模块定义变量都是局部变量,除了LOCAL_PATH之外的
+所有LOCAL_*开头的变量,都只能在模块定义中使用,
+除了 LOCAL_MODULE 外都是可选定义, 
+使用include $(CLEAR_VARS)后,都是空值.
+按照与标准NDK的比较, 分为三类:
+</p>
+
+<h4 id="toc_3.1.3.1">与NDK一致的标准变量</h4>
+<ol>
+<li>
+LOCAL_MODULE
+  模块名,不能与其它模块名冲突, 不要包含前缀或后缀
+
+<li>
+LOCAL_MODULE_FILENAME
+  自定义模块编译的最终生成文件名, 不要包含路径或后缀
+
+<li>
+LOCAL_SRC_FILES
+  模块所需要的所有源文件列表
+
+<li>
+LOCAL_CPP_EXTENSION
+  C++文件的后缀名列表,默认是'.cpp' 
+
+<li>
+LOCAL_C_INCLUDES
+  C/C++额外的头文件目录
+
+<li>
+LOCAL_CFLAGS
+  C/C++额外的编译参数
+
+<li>
+LOCAL_CPPFLAGS
+  C++额外的编译参数
+
+<li>
+LOCAL_STATIC_LIBRARIES
+  依赖的静态库模块名的列表 
+
+<li>
+LOCAL_SHARED_LIBRARIES
+  依赖的动态库模块名的列表 
+
+<li>
+LOCAL_LDLIBS
+  额外的连接库参数
+
+<li>
+LOCAL_LDFLAGS
+  额外的连接参数
+
+<li>
+LOCAL_EXPORT_CFLAGS
+  C/C++额外的编译参数, 并传导给与之依赖的其它模块
+
+<li>
+LOCAL_EXPORT_CPPFLAGS
+  C++额外的编译参数, 并传导给与之依赖的其它模块
+
+<li>
+LOCAL_EXPORT_C_INCLUDES
+  C/C++额外的头文件目录, 并传导给与之依赖的其它模块
+
+<li>
+LOCAL_EXPORT_LDFLAGS
+  额外的连接参数, 并传导给与之依赖的其它模块
+
+<li>
+LOCAL_EXPORT_LDLIBS
+  额外的连接库参数, 并传导给与之依赖的其它模块
+
+</ol>
+
+<h4 id="toc_3.1.3.2">功能扩展的增强变量</h4>
+<ol>
+<li>
+LOCAL_WHOLE_STATIC_LIBRARIES
+  需要全部连接的静态库列表. 标准NDK的作法是:只有在制作动态库时,该变量才有效.
+  增强用途时,在制作静态库时, 会将该变量中的所有库,分解合并到最终的目标库中.
+
+<li>
+LOCAL_SHORT_COMMANDS
+  是否将命令行参数写入文件,再将文件作为命令的参数,这样作的目的是减少命令行长度.
+  因为在Windows平台上对命令行参数的长度有限制.
+  标准NDK的作法是: 只支持true/false, 即只能统一设置模块的所有编译环节. 
+  但在实际应用中, 通常只有连接时的命令行参数,才超过系统限制.
+  因此支持cc, ar, link, asm, rs参数的组合,可以灵活设置各环节.
+
+<ol>
+<li>
+cc 是指编译源文件时使用该功能
+
+<li>
+ar 是指在成生静态库时使用该功能
+
+<li>
+link 是指连接成动态库或可执行文件时使用该功能
+
+<li>
+asm 是指编译汇编文件时使用该功能
+
+</ol>
+</ol>
+
+<h4 id="toc_3.1.3.3">全新定义的新增变量</h4>
+<ol>
+<li>
+LOCAL_INSTALLABLE
+  标准NDK中只有动态库和可执行文件是可安装的, 最终会复制到libs目录,
+  只要定义该变量为true, 即使静态库也会成为可安装的, 也会复制到libs目录
+
+<li>
+LOCAL_OBJC_ARC
+  ObjectC代码是否开启,自动引用计数(ARC)
+
+<li>
+LOCAL_ASM_CONVERSION
+  .S,.s的编译转换工具,即将相应编译命令行转交给该工具处理.
+  主要在编译iOS目标代码时, gas的汇编代码,需要使用gas-preprocessor.pl进行转换后,再编译.
+  所以通常编译iOS目标代码时,通常定义 LOCAL_ASM_CONVERSION := $(NDK_ROOT)/gas-preprocessor.pl
+
+</ol>
+
+<h2 id="toc_3.2">全局定义语法</h2>
+<p>
+Application.mk 是全局编译过程的定义文件,可以没有, 是可选的文件.
+实质上也是一个Makefile文件, 但是只会被编译系统读取分析一次,
+且会在编译模块的定义文件 NDK_PROJECT_MAKEFILE 之前执行.
+所以适合定义些全局的变量,做些全局的操作.
+如下是全部可以使用的全局变量,
+</p>
+<ol>
+<li>
+APP_PROJECT_PATH
+  项目目录, 默认是按如下规则自动搜索, 也可以自定义.
+
+<ol>
+<li>
+ndk-build 会自动搜索jni所在目录
+
+<li>
+ios-build 会自动搜索ios所在目录
+
+<li>
+mk-build 会自动搜索mk所在目录
+
+</ol>
+<li>
+APP_MODULES
+  需要编译的模块名称列表, 默认是所有模块
+
+<li>
+APP_CFLAGS
+  全局的C/C++额外编译参数列表,对所有模块起作用
+
+<li>
+APP_CPPFLAGS
+  全局的C++额外编译参数列表,对所有模块起作用
+
+<li>
+APP_LDFLAGS
+  全局的额外连接参数列表,对所有模块起作用
+
+<li>
+APP_SHORT_COMMANDS
+  全局设置, 支持cc, ar, link, asm, rs参数的组合, 详细说明请参考 LOCAL_SHORT_COMMANDS.
+
+<li>
+APP_BUILD_SCRIPT
+  默认情况下等于APP_PROJECT_PATH目录下的NDK_PROJECT_MAKEFILE 文件,也可以自定义为其它文件
+
+</ol>
+<hr />
+<h1 id="toc_4">注意的问题</h1>
+<ol>
+<li>
+$(call my-dir) 必须作为文件中的第一个语句, 且在同一文件中,不能重复调用.
+
+<li>
+默认情况下, 只有动态库,可执行程序才是可安装文件.
+  静态库, 只有被可安装文件依赖时,才会编译.
+  可以定义静态模块的LOCAL_INSTALLABLE := true, 则相应的静态库,将作为可安装文件.
+
+<li>
+APP_MODULES 只需列出最终模块名,可以多个,
+  其它被依赖的模块会自动被编译, 最终相应可安装文件,会自动复制到libs目录中.
+
+<li>
+obj目录中的.o.d文件是用来缓存,在编译过程中,推导出来的依赖关系, 会自动更新. 
+  但是若只是源文件的后缀更新了,由于旧的依赖关系,反而会出错,需要手工删除相应的.o.d文件.
+  例如,源文件名是hello.c, 那么hello.o.d的内容将是 hello.o: hello.c. 当重命名为hello.cpp时,
+  由于旧的依赖关系, 找不到hello.c 编译就出错, 只能手工删除hello.o.d文件.
+
+<li>
+当include 其它模块文件定义文件时, 相应的include语句, 必须放在文件尾部.
+
+<li>
+LOCAL_SRC_FILES 是所有源文件列表, 必须是以LOCAL_PATH为相对目录, 通常可以使用$(wildcard *.c)收集所有文件
+
+</ol>
+
+</body>
+</html>

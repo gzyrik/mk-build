@@ -55,7 +55,8 @@ TARGET_DISABLE_RELRO_LDFLAGS := -Wl,-z,norelro -Wl,-z,lazy
 
 # This flag are used to provide compiler protection against format
 # string vulnerabilities.
-TARGET_FORMAT_STRING_CFLAGS := -Wformat -Werror=format-security
+TARGET_FORMAT_STRING_CFLAGS := -Wformat -Werror=format-security \
+	-Wno-format-extra-args
 
 # This flag disables the above security checks
 TARGET_DISABLE_FORMAT_STRING_CFLAGS := -Wno-error=format-security
@@ -98,13 +99,14 @@ $(PRIVATE_CXX) \
 endef
 
 define cmd-build-static-library
-$(PRIVATE_AR) $(call host-path,$(LOCAL_BUILT_MODULE)) $(PRIVATE_AR_OBJECTS)
+lua $(NDK_ROOT)/ndk-ar.lua $(NDK_PLATFORM_PREFIX) $(PRIVATE_ABI) $(PRIVATE_AR) \
+	$(call host-path,$(LOCAL_BUILT_MODULE)) $(PRIVATE_AR_OBJECTS) $(PRIVATE_WHOLE_STATIC_LIBRARIES)
 endef
 
 # The strip command is only used for shared libraries and executables.
 # It is thus safe to use --strip-unneeded, which is only dangerous
 # when applied to static libraries or object files.
-cmd-strip = $(PRIVATE_STRIP) --strip-unneeded $(call host-path,$1)
+cmd-strip = $(if $(NDK_NOSTRIP),,$(PRIVATE_STRIP) --strip-unneeded $(call host-path,$1))
 
 # The command objcopy --add-gnu-debuglink= will be needed for Valgrind
 cmd-add-gnu-debuglink = $(PRIVATE_OBJCOPY) --add-gnu-debuglink=$(strip $(call host-path,$2)) $(call host-path,$1)
@@ -123,6 +125,7 @@ TARGET_CC       = $(CC)
 else
 TARGET_CC       = $(TOOLCHAIN_PREFIX)gcc
 endif
+TARGET_AS		= $(TARGET_CC)
 TARGET_CFLAGS   =
 TARGET_CONLYFLAGS =
 
@@ -136,6 +139,11 @@ TARGET_CXXFLAGS = $(TARGET_CFLAGS) -fno-exceptions -fno-rtti
 TARGET_RS_CC    = $(RENDERSCRIPT_TOOLCHAIN_PREFIX)llvm-rs-cc
 TARGET_RS_BCC   = $(RENDERSCRIPT_TOOLCHAIN_PREFIX)bcc_compat
 TARGET_RS_FLAGS = -Wall -Werror
+ifeq (,$(findstring 64,$(TARGET_ARCH_ABI)))
+TARGET_RS_FLAGS += -m32
+else
+TARGET_RS_FLAGS += -m64
+endif
 
 TARGET_ASM      = $(HOST_PREBUILT)/yasm
 TARGET_ASMFLAGS =
@@ -143,7 +151,14 @@ TARGET_ASMFLAGS =
 TARGET_LD       = $(TOOLCHAIN_PREFIX)ld
 TARGET_LDFLAGS :=
 
+# Use *-gcc-ar instead of *-ar for better LTO support, except for
+# gcc4.6 which doesn't have gcc-ar
+ifneq (4.6,$(NDK_TOOLCHAIN_VERSION))
+TARGET_AR       = $(TOOLCHAIN_PREFIX)gcc-ar
+else
 TARGET_AR       = $(TOOLCHAIN_PREFIX)ar
+endif
+
 TARGET_ARFLAGS := crsD
 
 TARGET_STRIP    = $(TOOLCHAIN_PREFIX)strip
@@ -153,3 +168,5 @@ TARGET_OBJCOPY  = $(TOOLCHAIN_PREFIX)objcopy
 TARGET_OBJ_EXTENSION := .o
 TARGET_LIB_EXTENSION := .a
 TARGET_SONAME_EXTENSION := .so
+TARGET_EXE_EXTENSION := .exe
+TARGET_JAR_EXTENSION := .jar

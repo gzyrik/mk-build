@@ -41,6 +41,11 @@ all: ndk-app-$(_app)
 
 # which platform/abi/toolchain are we going to use?
 TARGET_PLATFORM := $(call get,$(_map),APP_PLATFORM)
+ifeq ($(TARGET_PLATFORM),android-L)
+$(call __ndk_warning,WARNING: android-L is renamed as android-21)
+TARGET_PLATFORM := android-21
+endif
+
 
 # The ABI(s) to use
 NDK_APP_ABI := $(subst $(comma),$(space),$(strip $(NDK_APP_ABI)))
@@ -103,6 +108,7 @@ else
                 NDK_APP_ABI := $(subst $(_unknown_abis_prefix),$(filter-out $(NDK_KNOWN_ARCHS),$(NDK_FOUND_ARCHS)),$(NDK_APP_ABI))
             endif
         endif
+    TARGET_PLATFORM := android-21
     endif
     # check the target ABIs for this application
     _bad_abis = $(strip $(filter-out $(NDK_ALL_ABIS),$(NDK_APP_ABI)))
@@ -121,11 +127,21 @@ endif
 # you're not going to leave a stale shared library for the old one.
 #
 ifeq ($(NDK_APP.$(_app).cleaned_binaries),)
-    NDK_APP.$(_app).cleaned_binaries := true
-    clean-installed-binaries::
-	$(hide) $(call host-rm,$(NDK_ALL_ABIS:%=$(NDK_APP_LIBS_OUT)/%/lib*$(TARGET_SONAME_EXTENSION)))
-	$(hide) $(call host-rm,$(NDK_ALL_ABIS:%=$(NDK_APP_LIBS_OUT)/%/gdbserver))
-	$(hide) $(call host-rm,$(NDK_ALL_ABIS:%=$(NDK_APP_LIBS_OUT)/%/gdb.setup))
+NDK_APP.$(_app).cleaned_binaries := true
+#For compatibility
+ifneq (,$(call lt,$(NDK_NEED_VERSION),9))
+clean-installed-binaries: PRIVATE_ABI := $(APP_ABI)
+else
+clean-installed-binaries: PRIVATE_ABI := $(NDK_ALL_ABIS)
+endif
+clean-installed-binaries::
+	$(hide) $(call host-rm,$(NDK_APP_LIBS_OUT)/lib*$(TARGET_LIB_EXTENSION))
+	$(hide) $(call host-rm,$(NDK_APP_LIBS_OUT)/*$(TARGET_JAR_EXTENSION))
+	$(hide) $(call host-rm,$(PRIVATE_ABI:%=$(NDK_APP_LIBS_OUT)/%/*$(TARGET_EXE_EXTENSION)))
+	$(hide) $(call host-rm,$(PRIVATE_ABI:%=$(NDK_APP_LIBS_OUT)/%/lib*$(TARGET_LIB_EXTENSION)))
+	$(hide) $(call host-rm,$(PRIVATE_ABI:%=$(NDK_APP_LIBS_OUT)/%/lib*$(TARGET_SONAME_EXTENSION)))
+	$(hide) $(call host-rm,$(PRIVATE_ABI:%=$(NDK_APP_LIBS_OUT)/%/gdbserver))
+	$(hide) $(call host-rm,$(PRIVATE_ABI:%=$(NDK_APP_LIBS_OUT)/%/gdb.setup))
 endif
 
 # Renderscript
@@ -133,10 +149,26 @@ endif
 RENDERSCRIPT_TOOLCHAIN_ROOT   := $(NDK_ROOT)/toolchains/renderscript
 RENDERSCRIPT_TOOLCHAIN_PREBUILT_ROOT := $(call host-prebuilt-tag,$(RENDERSCRIPT_TOOLCHAIN_ROOT))
 RENDERSCRIPT_TOOLCHAIN_PREFIX := $(RENDERSCRIPT_TOOLCHAIN_PREBUILT_ROOT)/bin/
-RENDERSCRIPT_TOOLCHAIN_HEADER := $(RENDERSCRIPT_TOOLCHAIN_PREBUILT_ROOT)/lib/clang/3.3/include
+RENDERSCRIPT_TOOLCHAIN_HEADER := $(RENDERSCRIPT_TOOLCHAIN_PREBUILT_ROOT)/lib/clang/3.5/include
 
 # Each ABI
 $(foreach _abi,$(NDK_APP_ABI),\
     $(eval TARGET_ARCH_ABI := $(_abi))\
     $(eval include $(BUILD_SYSTEM)/setup-abi.mk) \
 )
+
+ifneq (,$(filter darwin ios,$(NDK_PLATFORM_PREFIX)))
+# All ABI lipo
+LIPO_ABI   := unifier
+TARGET_OUT := $(NDK_APP_OUT)/$(_app)/$(LIPO_ABI)
+ifeq ($(NDK_APP_OPTIM),debug)
+TARGET_OBJS := $(TARGET_OUT)/objs-debug
+else
+TARGET_OBJS := $(TARGET_OUT)/objs
+endif
+
+$(foreach _module,$(NDK_APP_MODULES),\
+    $(if $(call module-is-static-library,$(_module)),\
+        $(eval include $(BUILD_SYSTEM)/setup-lipo.mk)) \
+)
+endif

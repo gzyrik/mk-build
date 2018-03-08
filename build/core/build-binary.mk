@@ -144,8 +144,13 @@ LOCAL_RS_OBJECTS :=
 
 # always define ANDROID when building binaries
 #
-LOCAL_CFLAGS := -DANDROID $(LOCAL_CFLAGS)
-
+LOCAL_CFLAGS := -D$(NDK_PLATFORM_MACRO) $(LOCAL_CFLAGS)
+#For compatibility, platform name iPhoneOS
+ifneq (,$(call lt,$(NDK_NEED_VERSION),11))
+ifeq ($(NDK_PLATFORM_MACRO),IOS)
+LOCAL_CFLAGS += -DIPHONEOS
+endif
+endif
 #
 # Add the default system shared libraries to the build
 #
@@ -216,6 +221,15 @@ ifneq (,$(filter true,$(NDK_APP_PIE) $(TARGET_PIE)))
   endif
 endif
 
+# Uncomment the following to enable multithreaded ld.gold by default for arm, x86 and x86_64
+# unless (conservatively) -fuse-ld= is specified
+#
+#ifneq (,$(filter $(TARGET_ARCH_ABI), armeabi armeabi-v7a armeabi-v7a-hard x86 x86_64))
+#  ifeq (,$(filter -fuse-ld=,$(TARGET_LDFLAGS) $(LOCAL_LDFLAGS) $(NDK_APP_LDFLAGS)))
+#    LOCAL_LDFLAGS += -Wl,--threads
+#  endif
+#endif
+
 #
 # The original Android build system allows you to use the .arm prefix
 # to a source file name to indicate that it should be defined in either
@@ -249,6 +263,7 @@ endif
 
 $(call clear-all-src-tags)
 
+LOCAL_SRC_FILES := $(sort $(LOCAL_SRC_FILES))
 # As a special extension, the NDK also supports the .neon extension suffix
 # to indicate that a single file can be compiled with ARM NEON support
 # We must support both foo.c.neon and foo.c.arm.neon here
@@ -256,10 +271,72 @@ $(call clear-all-src-tags)
 # Also, if LOCAL_ARM_NEON is set to 'true', force Neon mode for all source
 # files
 #
+# strip the .cov suffix from LOCAL_SRC_FILES
+LOCAL_MARK_COVERAGE := $(strip $(LOCAL_MARK_COVERAGE))
+ifdef LOCAL_MARK_COVERAGE
+  $(if $(filter-out true false,$(LOCAL_MARK_COVERAGE)),\
+    $(call __ndk_info,LOCAL_MARK_COVERAGE must be defined either to 'true' or 'false' in $(LOCAL_MAKEFILE), not '$(LOCAL_MARK_COVERAGE)')\
+    $(call __ndk_error,Aborting) \
+  )
+endif
+ifeq ($(LOCAL_MARK_COVERAGE),true)
+  cov_sources := $(LOCAL_SRC_FILES:%.cov=%)
+else
+  cov_sources := $(filter %.cov,$(LOCAL_SRC_FILES))
+  cov_sources := $(cov_sources:%.cov=%)
+endif
 
-neon_sources  := $(filter %.neon,$(LOCAL_SRC_FILES))
-neon_sources  := $(neon_sources:%.neon=%)
+cov_sources := $(strip $(cov_sources))
+cov_sources := $(patsubst %.arc,%,$(cov_sources))
+cov_sources := $(patsubst %.neon,%,$(cov_sources))
+cov_sources := $(patsubst %.arm,%,$(cov_sources))
+ifdef cov_sources
+  LOCAL_MARK_COVERAGE := true 
+  $(call tag-src-files,$(cov_sources),cov)
+else
+  LOCAL_MARK_COVERAGE :=
+endif
 
+$(call module-mark-coverage,$(LOCAL_MODULE),$(LOCAL_MARK_COVERAGE))
+LOCAL_SRC_FILES := $(LOCAL_SRC_FILES:%.cov=%)
+
+# strip the .arc suffix from LOCAL_SRC_FILES
+# and tag the relevant sources with the 'arc' tag
+# We must support both foo.c.arc, foo.m.neon.arc, foo.m.arm.arc and foo.m.arm.neon.arc here
+#
+# Also, if LOCAL_OBJC_ARC is set to 'true', force Arc mode for all source
+#
+LOCAL_OBJC_ARC := $(strip $(LOCAL_OBJC_ARC))
+ifdef LOCAL_OBJC_ARC
+  $(if $(filter-out true false,$(LOCAL_OBJC_ARC)),\
+    $(call __ndk_info,LOCAL_OBJC_ARC must be defined either to 'true' or 'false' in $(LOCAL_MAKEFILE), not '$(LOCAL_OBJC_ARC)')\
+    $(call __ndk_error,Aborting) \
+  )
+endif
+ifeq ($(LOCAL_OBJC_ARC),true)
+  arc_sources := $(LOCAL_SRC_FILES:%.arc=%)
+else
+arc_sources   := $(filter %.arc,$(LOCAL_SRC_FILES))
+arc_sources   := $(arc_sources:%.arc=%)
+endif
+
+arc_sources := $(strip $(arc_sources))
+arc_sources := $(patsubst %.neon,%,$(arc_sources))
+arc_sources := $(patsubst %.arm,%,$(arc_sources))
+ifdef arc_sources
+  ifneq ($(filter-out %.m %.mm, $(arc_sources)),)
+    $(call __ndk_info,ARC support is only possible for Object-C)
+    $(call __ndk_info,Please remove other files: $(filter-out %.m %.mm, $(arc_sources)))
+    $(call __ndk_error,Aborting)
+  endif
+  $(call tag-src-files,$(arc_sources),arc)
+endif
+
+LOCAL_SRC_FILES := $(LOCAL_SRC_FILES:%.arc=%)
+
+# strip the .arm suffix from LOCAL_SRC_FILES
+# and tag the relevant sources with the 'arm' tag
+#
 LOCAL_ARM_NEON := $(strip $(LOCAL_ARM_NEON))
 ifdef LOCAL_ARM_NEON
   $(if $(filter-out true false,$(LOCAL_ARM_NEON)),\
@@ -268,17 +345,20 @@ ifdef LOCAL_ARM_NEON
   )
 endif
 ifeq ($(LOCAL_ARM_NEON),true)
-  neon_sources += $(LOCAL_SRC_FILES:%.neon=%)
+  neon_sources := $(LOCAL_SRC_FILES:%.neon=%)
   # tag the precompiled header with 'neon' tag if it exists
   ifneq (,$(LOCAL_PCH))
     $(call tag-src-files,$(LOCAL_PCH),neon)
   endif
+else
+  neon_sources := $(filter %.neon,$(LOCAL_SRC_FILES))
+  neon_sources := $(neon_sources:%.neon=%)
 endif
 
 neon_sources := $(strip $(neon_sources))
 ifdef neon_sources
-  ifeq ($(filter $(TARGET_ARCH_ABI), armeabi-v7a armeabi-v7a-hard x86),)
-    $(call __ndk_info,NEON support is only possible for armeabi-v7a ABI, its variant armeabi-v7a-hard and x86 ABI)
+  ifeq ($(filter $(TARGET_ARCH_ABI), armeabi-v7a armeabi-v7a-hard armeabi-v7s x86 arm64-v8a),)
+    $(call __ndk_info,NEON support is only possible for armeabi-v7a ABI, its variant armeabi-v7a-hard, armeabi-v7s , arm64-v8a and x86 ABI)
     $(call __ndk_info,Please add checks against TARGET_ARCH_ABI in $(LOCAL_MAKEFILE))
     $(call __ndk_error,Aborting)
   endif
@@ -301,6 +381,14 @@ ifeq ($(LOCAL_ARM_MODE),arm)
     ifneq (,$(LOCAL_PCH))
         $(call tag-src-files,$(LOCAL_PCH),arm)
     endif
+else
+# For arm, all sources are compiled in thumb mode by default in release mode.
+# Linker should behave similarly
+ifneq ($(filter armeabi%, $(TARGET_ARCH_ABI)),)
+ifneq ($(APP_OPTIM),debug)
+    LOCAL_LDFLAGS += -mthumb
+endif
+endif
 endif
 ifeq ($(LOCAL_ARM_MODE),thumb)
     arm_sources := $(empty)
@@ -309,7 +397,7 @@ $(call tag-src-files,$(arm_sources),arm)
 
 # tag debug if APP_OPTIM is 'debug'
 #
-ifeq ($(APP_OPTIM),debug)
+ifeq ($(NDK_APP_OPTIM),debug)
     $(call tag-src-files,$(LOCAL_SRC_FILES),debug)
     ifneq (,$(LOCAL_PCH))
         $(call tag-src-files,$(LOCAL_PCH),debug)
@@ -339,11 +427,7 @@ LOCAL_DEPENDENCY_DIRS :=
 
 # all_source_patterns contains the list of filename patterns that correspond
 # to source files recognized by our build system
-ifeq ($(TARGET_ARCH_ABI),x86)
-all_source_extensions := .c .s .S .asm $(LOCAL_CPP_EXTENSION) $(LOCAL_RS_EXTENSION)
-else
-all_source_extensions := .c .s .S $(LOCAL_CPP_EXTENSION) $(LOCAL_RS_EXTENSION)
-endif
+all_source_extensions := .c .s .S .m .asm .java .jar $(LOCAL_CPP_EXTENSION) $(LOCAL_RS_EXTENSION)
 all_source_patterns   := $(foreach _ext,$(all_source_extensions),%$(_ext))
 all_cpp_patterns      := $(foreach _ext,$(LOCAL_CPP_EXTENSION),%$(_ext))
 all_rs_patterns       := $(foreach _ext,$(LOCAL_RS_EXTENSION),%$(_ext))
@@ -393,6 +477,9 @@ ifneq (,$(call module-has-c++-features,$(LOCAL_MODULE),rtti exceptions))
     endif
 endif
 
+ifeq (true,$(call module-has-mark-coverage,$(LOCAL_MODULE)))
+    LOCAL_LDFLAGS += $(TARGET_CONVERAGE_LDFLAGS)
+endif
 # Set include patch for renderscript
 
 
@@ -433,7 +520,7 @@ ifneq (,$(LOCAL_PCH))
     )
 
     # Files from now on build with PCH
-    LOCAL_CPPFLAGS += -Winvalid-pch -include $(LOCAL_BUILT_PCH)
+    LOCAL_CPPFLAGS += -Winvalid-pch -include $(LOCAL_OBJS_DIR)/$(LOCAL_BUILT_PCH)
 
     # Insert PCH dir at beginning of include search path
     LOCAL_C_INCLUDES := \
@@ -446,7 +533,10 @@ endif
 
 $(foreach src,$(filter %.c,$(LOCAL_SRC_FILES)), $(call compile-c-source,$(src),$(call get-object-name,$(src))))
 $(foreach src,$(filter %.S %.s,$(LOCAL_SRC_FILES)), $(call compile-s-source,$(src),$(call get-object-name,$(src))))
-$(foreach src,$(filter $(all_cpp_patterns),$(LOCAL_SRC_FILES)),\
+$(foreach src,$(filter %.m,$(LOCAL_SRC_FILES)), $(call compile-m-source,$(src),$(call get-object-name,$(src))))
+$(foreach src,$(filter %.mm,$(LOCAL_SRC_FILES)), $(call compile-mm-source,$(src),$(call get-object-name,$(src))))
+
+$(foreach src,$(filter $(all_cpp_patterns),$(filter-out %.mm,$(LOCAL_SRC_FILES))),\
     $(call compile-cpp-source,$(src),$(call get-object-name,$(src)))\
 )
 
@@ -454,9 +544,7 @@ $(foreach src,$(filter $(all_rs_patterns),$(LOCAL_SRC_FILES)),\
     $(call compile-rs-source,$(src),$(call get-rs-scriptc-name,$(src)),$(call get-rs-bc-name,$(src)),$(call get-rs-so-name,$(src)),$(call get-object-name,$(src)),$(RS_COMPAT))\
 )
 
-ifeq ($(TARGET_ARCH_ABI),x86)
 $(foreach src,$(filter %.asm,$(LOCAL_SRC_FILES)), $(call compile-asm-source,$(src),$(call get-object-name,$(src))))
-endif
 
 #
 # The compile-xxx-source calls updated LOCAL_OBJECTS and LOCAL_DEPENDENCY_DIRS
@@ -475,7 +563,9 @@ CLEAN_OBJS_DIRS     += $(LOCAL_OBJS_DIR)
 ifneq ($(filter -l%,$(LOCAL_LDLIBS)),)
     LOCAL_LDLIBS := -L$(call host-path,$(SYSROOT_LINK)/usr/lib) $(LOCAL_LDLIBS)
     ifneq ($(filter x86_64 mips64,$(TARGET_ARCH_ABI)),)
+        ifneq (,$(strip $(wildcard $(call host-path,$(SYSROOT_LINK)/usr/lib64))))
         LOCAL_LDLIBS := -L$(call host-path,$(SYSROOT_LINK)/usr/lib64) $(LOCAL_LDLIBS)
+        endif
     endif
 endif
 
@@ -523,8 +613,12 @@ ifeq ($(call module-get-class,$(LOCAL_MODULE)),STATIC_LIBRARY)
 #
 
 ar_objects := $(call host-path,$(LOCAL_OBJECTS))
+all_libs := $(call module-get-link-libs,$(LOCAL_MODULE))
+static_libs := $(call module-filter-static-libraries,$(all_libs))
+whole_static_libs := $(call module-extract-whole-static-libs,$(LOCAL_MODULE),$(static_libs))
+whole_static_libs := $(call map,module-get-built,$(whole_static_libs))
 
-ifeq ($(LOCAL_SHORT_COMMANDS),true)
+ifneq (,$(filter ar,$(LOCAL_SHORT_COMMANDS)))
     $(call ndk_log,Building static library module '$(LOCAL_MODULE)' with linker list file)
     ar_list_file := $(LOCAL_OBJS_DIR)/archiver.list
     $(call generate-list-file,$(ar_objects),$(ar_list_file))
@@ -542,9 +636,10 @@ endif
 $(LOCAL_BUILT_MODULE): PRIVATE_ABI := $(TARGET_ARCH_ABI)
 $(LOCAL_BUILT_MODULE): PRIVATE_AR := $(TARGET_AR) $(ar_flags)
 $(LOCAL_BUILT_MODULE): PRIVATE_AR_OBJECTS := $(ar_objects)
+$(LOCAL_BUILT_MODULE): PRIVATE_WHOLE_STATIC_LIBRARIES := $(whole_static_libs)
 $(LOCAL_BUILT_MODULE): PRIVATE_BUILD_STATIC_LIB := $(cmd-build-static-library)
 
-$(LOCAL_BUILT_MODULE): $(LOCAL_OBJECTS)
+$(LOCAL_BUILT_MODULE): $(LOCAL_OBJECTS) $(whole_static_libs) $(LOCAL_MAKEFILE) $(NDK_APP_APPLICATION_MK)
 	$(call host-echo-build-step,$(PRIVATE_ABI),StaticLibrary) "$(PRIVATE_NAME)"
 	$(hide) $(call host-rm,$@)
 	$(hide) $(PRIVATE_BUILD_STATIC_LIB)
@@ -593,6 +688,7 @@ all_libs := $(call module-get-link-libs,$(LOCAL_MODULE))
 shared_libs := $(call module-filter-shared-libraries,$(all_libs))
 static_libs := $(call module-filter-static-libraries,$(all_libs))
 whole_static_libs := $(call module-extract-whole-static-libs,$(LOCAL_MODULE),$(static_libs))
+static_libs := $(filter-out $(call map,module-get-whole-static-libs,$(whole_static_libs)),$(static_libs))
 static_libs := $(filter-out $(whole_static_libs),$(static_libs))
 
 $(call -ndk-mod-debug,module $(LOCAL_MODULE) [$(LOCAL_BUILT_MODULE)])
@@ -620,7 +716,7 @@ linker_objects_and_libraries = $(strip $(call TARGET-get-linker-objects-and-libr
     $(whole_static_libs), \
     $(shared_libs)))
 
-ifeq ($(LOCAL_SHORT_COMMANDS),true)
+ifneq (, $(filter link, $(LOCAL_SHORT_COMMANDS)))
     $(call ndk_log,Building ELF binary module '$(LOCAL_MODULE)' with linker list file)
     linker_options   := $(linker_objects_and_libraries)
     linker_list_file := $(LOCAL_OBJS_DIR)/linker.list
@@ -633,8 +729,8 @@ $(LOCAL_BUILT_MODULE): $(shared_libs) $(static_libs) $(whole_static_libs)
 $(LOCAL_BUILT_MODULE): PRIVATE_ABI := $(TARGET_ARCH_ABI)
 $(LOCAL_BUILT_MODULE): PRIVATE_LINKER_OBJECTS_AND_LIBRARIES := $(linker_objects_and_libraries)
 $(LOCAL_BUILT_MODULE): PRIVATE_STATIC_LIBRARIES := $(static_libs)
-$(LOCAL_BUILT_MODULE): PRIVATE_WHOLE_STATIC_LIBRARIES := $(whole_static_libs))
-$(LOCAL_BUILT_MODULE): PRIVATE_SHARED_LIBRARIES := $(shared_libs))
+$(LOCAL_BUILT_MODULE): PRIVATE_WHOLE_STATIC_LIBRARIES := $(whole_static_libs)
+$(LOCAL_BUILT_MODULE): PRIVATE_SHARED_LIBRARIES := $(shared_libs)
 
 endif
 
@@ -643,7 +739,7 @@ endif
 #
 ifeq ($(call module-get-class,$(LOCAL_MODULE)),SHARED_LIBRARY)
 $(LOCAL_BUILT_MODULE): PRIVATE_BUILD_SHARED_LIB := $(cmd-build-shared-library)
-$(LOCAL_BUILT_MODULE): $(LOCAL_OBJECTS)
+$(LOCAL_BUILT_MODULE): $(LOCAL_OBJECTS) $(LOCAL_MAKEFILE) $(NDK_APP_APPLICATION_MK)
 	$(call host-echo-build-step,$(PRIVATE_ABI),SharedLibrary) "$(PRIVATE_NAME)"
 	$(hide) $(PRIVATE_BUILD_SHARED_LIB)
 
@@ -654,9 +750,9 @@ endif
 # If this is an executable module
 #
 ifeq ($(call module-get-class,$(LOCAL_MODULE)),EXECUTABLE)
-$(LOCAL_BUILT_MODULE): PRIVATE_ABI := $(TARGET_ARCH_ABI)
+$(LOCAL_BUILT_MODULE): PRIVATE_ABI              := $(TARGET_ARCH_ABI)
 $(LOCAL_BUILT_MODULE): PRIVATE_BUILD_EXECUTABLE := $(cmd-build-executable)
-$(LOCAL_BUILT_MODULE): $(LOCAL_OBJECTS)
+$(LOCAL_BUILT_MODULE): $(LOCAL_OBJECTS) $(LOCAL_MAKEFILE) $(NDK_APP_APPLICATION_MK)
 	$(call host-echo-build-step,$(PRIVATE_ABI),Executable) "$(PRIVATE_NAME)"
 	$(hide) $(PRIVATE_BUILD_EXECUTABLE)
 
@@ -675,23 +771,20 @@ endif
 #
 # If this is an installable module
 #
-ifeq ($(call module-is-installable,$(LOCAL_MODULE)),$(true))
+ifneq ($(call module-is-installable,$(LOCAL_MODULE)),)
 $(LOCAL_INSTALLED): PRIVATE_ABI         := $(TARGET_ARCH_ABI)
 $(LOCAL_INSTALLED): PRIVATE_NAME        := $(notdir $(LOCAL_BUILT_MODULE))
 $(LOCAL_INSTALLED): PRIVATE_SRC         := $(LOCAL_BUILT_MODULE)
 $(LOCAL_INSTALLED): PRIVATE_DST_DIR     := $(NDK_APP_DST_DIR)
 $(LOCAL_INSTALLED): PRIVATE_DST         := $(LOCAL_INSTALLED)
 $(LOCAL_INSTALLED): PRIVATE_STRIP       := $(TARGET_STRIP)
-$(LOCAL_INSTALLED): PRIVATE_STRIP_CMD   := $(call cmd-strip, $(PRIVATE_DST))
-$(LOCAL_INSTALLED): PRIVATE_OBJCOPY     := $(TARGET_OBJCOPY)
-$(LOCAL_INSTALLED): PRIVATE_OBJCOPY_CMD := $(call cmd-add-gnu-debuglink, $(PRIVATE_DST), $(PRIVATE_SRC))
+$(LOCAL_INSTALLED): PRIVATE_STRIP_INFO  := $(if $(NDK_NOSTRIP),Copy,Strip)
+$(LOCAL_INSTALLED): PRIVATE_STRIP_CMD   := $(call cmd-strip,$(LOCAL_INSTALLED))
 
 $(LOCAL_INSTALLED): $(LOCAL_BUILT_MODULE) clean-installed-binaries
-	$(call host-echo-build-step,$(PRIVATE_ABI),Install) "$(PRIVATE_NAME) => $(call pretty-dir,$(PRIVATE_DST))"
+	$(call host-echo-build-step,$(PRIVATE_ABI),Install|$(PRIVATE_STRIP_INFO)) "$(PRIVATE_NAME) => $(call pretty-dir,$(PRIVATE_DST))"
 	$(hide) $(call host-install,$(PRIVATE_SRC),$(PRIVATE_DST))
 	$(hide) $(PRIVATE_STRIP_CMD)
-
-#$(hide) $(PRIVATE_OBJCOPY_CMD)
 
 $(call generate-file-dir,$(LOCAL_INSTALLED))
 

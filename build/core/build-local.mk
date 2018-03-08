@@ -20,6 +20,19 @@
 # Detect the NDK installation path by processing this Makefile's location.
 # This assumes we are located under $NDK_ROOT/build/core/main.mk
 #
+__ndk_name           ?= Android NDK
+NDK_PLATFORM_PREFIX  ?= android
+NDK_PLATFORM_MACRO   ?= $(call uc, $(NDK_PLATFORM_PREFIX))
+NDK_PROJECT_MANIFEST ?= AndroidManifest.xml
+NDK_PROJECT_MAKEFILE ?= jni/Android.mk
+NDK_PLATFORM_MAKEFILE?= $(notdir $(NDK_PROJECT_MAKEFILE))
+
+ifeq (,$(NDK_NEED_VERSION))
+    override NDK_NEED_VERSION := 9
+else
+    $(info For compatibility use NDK_NEED_VERSION=$(NDK_NEED_VERSION))
+endif
+
 NDK_ROOT := $(dir $(lastword $(MAKEFILE_LIST)))
 NDK_ROOT := $(strip $(NDK_ROOT:%build/core/=%))
 NDK_ROOT := $(subst \,/,$(NDK_ROOT))
@@ -29,11 +42,11 @@ ifeq ($(NDK_ROOT),)
     NDK_ROOT := .
 endif
 ifeq ($(NDK_LOG),1)
-    $(info Android NDK: NDK installation path auto-detected: '$(NDK_ROOT)')
+    $(info $(__ndk_name): NDK installation path auto-detected: '$(NDK_ROOT)')
 endif
 ifneq ($(words $(NDK_ROOT)),1)
-    $(info Android NDK: You NDK installation path contains spaces.)
-    $(info Android NDK: Please re-install to a different location to fix the issue !)
+    $(info $(__ndk_name) NDK: You NDK installation path contains spaces.)
+    $(info $(__ndk_name) NDK: Please re-install to a different location to fix the issue !)
     $(error Aborting.)
 endif
 
@@ -42,8 +55,8 @@ include $(NDK_ROOT)/build/core/init.mk
 # ====================================================================
 #
 # If NDK_PROJECT_PATH is not defined, find the application's project
-# path by looking at the manifest file in the current directory or
-# any of its parents. If none is found, try again with 'jni/Android.mk'
+# path by looking at the '$(NDK_PROJECT_MANIFEST)' in the current directory or
+# any of its parents. If none is found, try again with '$(NDK_PROJECT_MAKEFILE)'
 #
 # Note that we first look at the current directory to avoid using
 # absolute NDK_PROJECT_PATH values. This reduces the length of all
@@ -66,27 +79,6 @@ include $(NDK_ROOT)/build/core/init.mk
 #
 # ====================================================================
 
-ifeq ($(HOST_OS),windows)
-# On Windows, defining host-dir-parent is a bit more tricky because the
-# GNU Make $(dir ...) function doesn't return an empty string when it
-# reaches the top of the directory tree, and we want to enforce this to
-# avoid infinite loops.
-#
-#   $(dir C:)     -> C:       (empty expected)
-#   $(dir C:/)    -> C:/      (empty expected)
-#   $(dir C:\)    -> C:\      (empty expected)
-#   $(dir C:/foo) -> C:/      (correct)
-#   $(dir C:\foo) -> C:\      (correct)
-#
-host-dir-parent = $(strip \
-    $(eval __host_dir_node := $(patsubst %/,%,$(subst \,/,$1)))\
-    $(eval __host_dir_parent := $(dir $(__host_dir_node)))\
-    $(filter-out $1,$(__host_dir_parent))\
-    )
-else
-host-dir-parent = $(patsubst %/,%,$(dir $1))
-endif
-
 find-project-dir = $(strip $(call find-project-dir-inner,$(abspath $1),$2))
 
 find-project-dir-inner = \
@@ -103,7 +95,7 @@ find-project-dir-inner-2 = \
         $(call ndk_log,    Found it !)\
         $(eval __found_project_path := $(__find_project_path))\
         ,\
-        $(eval __find_project_parent := $(call host-dir-parent,$(__find_project_path)))\
+        $(eval __find_project_parent := $(call parent-dir,$(__find_project_path)))\
         $(if $(__find_project_parent),\
             $(eval __find_project_path := $(__find_project_parent))\
             $(call find-project-dir-inner-2)\
@@ -111,6 +103,22 @@ find-project-dir-inner-2 = \
     )
 
 NDK_PROJECT_PATH := $(strip $(NDK_PROJECT_PATH))
+APP_PROJECT_PATH := $(strip $(APP_PROJECT_PATH))
+
+ifneq (,$(APP_PROJECT_PATH))
+    ifeq (,$(NDK_PROJECT_PATH))
+        # If NDK_PROJECT_PATH isn't set and APP_PROJECT_PATH is present, use APP_PROJECT_PATH
+        $(call ndk_log,Use APP_PROJECT_PATH for NDK_PROJECT_PATH: $(APP_PROJECT_PATH))
+        NDK_PROJECT_PATH := $(APP_PROJECT_PATH)
+    else
+        # If both NDK_PROJECT_PATH and APP_PROJECT_PATH are present, check consistency
+        ifneq ($(NDK_PROJECT_PATH),$(APP_PROJECT_PATH))
+            $(call __ndk_info,WARNING: NDK_PROJECT_PATH and APP_PROJECT_PATH are both set but not equal literally)
+            $(call __ndk_info,  NDK_PROJECT_PATH = $(NDK_PROJECT_PATH))
+            $(call __ndk_info,  APP_PROJECT_PATH = $(APP_PROJECT_PATH))
+        endif
+    endif
+endif
 
 ifeq (null,$(NDK_PROJECT_PATH))
 
@@ -128,19 +136,33 @@ else
 # NDK_PROJECT_PATH
 #
 ifndef NDK_PROJECT_PATH
-    ifneq (,$(strip $(wildcard AndroidManifest.xml)))
+    ifneq (,$(strip $(wildcard $(NDK_PROJECT_MANIFEST))))
         NDK_PROJECT_PATH := .
+        $(call ndk_log,Found project path: $(NDK_PROJECT_PATH) by $(NDK_PROJECT_MANIFEST))
     else
-        ifneq (,$(strip $(wildcard jni/Android.mk)))
+        ifneq (,$(strip $(wildcard $(NDK_PROJECT_MAKEFILE))))
             NDK_PROJECT_PATH := .
+            $(call ndk_log,Found project path: $(NDK_PROJECT_PATH) by $(NDK_PROJECT_MAKEFILE))
         endif
     endif
 endif
 ifndef NDK_PROJECT_PATH
-    NDK_PROJECT_PATH := $(call find-project-dir,.,jni/Android.mk)
+    NDK_PROJECT_PATH := $(call find-project-dir,.,$(NDK_PROJECT_MAKEFILE))
 endif
 ifndef NDK_PROJECT_PATH
-    NDK_PROJECT_PATH := $(call find-project-dir,.,AndroidManifest.xml)
+    NDK_PROJECT_PATH := $(call find-project-dir,.,$(NDK_PROJECT_MANIFEST))
+endif
+ifndef NDK_PROJECT_PATH
+    NDK_APPLICATION_MK := $(wildcard $(dir $(NDK_PROJECT_MAKEFILE))Application.mk)
+    ifneq ($(words $(NDK_APPLICATION_MK)), 1)
+        NDK_APPLICATION_MK := $(wildcard ./*/Application.mk)
+    endif
+    ifeq ($(words $(NDK_APPLICATION_MK)), 1)
+        NDK_PROJECT_PATH := .
+        $(call ndk_log,Found project path: '$(NDK_PROJECT_PATH)' by './*/Application.mk')
+    else
+        NDK_APPLICATION_MK := 
+    endif
 endif
 ifndef NDK_PROJECT_PATH
     $(call __ndk_info,Could not find application project directory !)
@@ -151,13 +173,17 @@ endif
 # Check that there are no spaces in the project path, or bad things will happen
 ifneq ($(words $(NDK_PROJECT_PATH)),1)
     $(call __ndk_info,Your Android application project path contains spaces: '$(NDK_PROJECT_PATH)')
-    $(call __ndk_info,The Android NDK build cannot work here. Please move your project to a different location.)
+    $(call __ndk_info,The $(__ndk_name) build cannot work here. Please move your project to a different location.)
     $(call __ndk_error,Aborting.)
 endif
 
-$(call ndk_log,Found project path: $(NDK_PROJECT_PATH))
+ifndef NDK_APPLICATION_MK
+   NDK_APPLICATION_MK := $(strip $(wildcard $(NDK_PROJECT_PATH)/$(dir $(NDK_PROJECT_MAKEFILE))Application.mk))
+endif
 
-NDK_APPLICATION_MK := $(strip $(wildcard $(NDK_PROJECT_PATH)/jni/Application.mk))
+ifndef NDK_APPLICATION_MK
+    NDK_APPLICATION_MK := $(strip $(wildcard $(NDK_PROJECT_PATH)/Application.mk))
+endif
 
 endif # NDK_PROJECT_PATH == null
 
@@ -189,7 +215,7 @@ endif
 $(call ndk_log,Ouput path for generated library files: $(NDK_APP_LIBS_OUT))
 
 # Fake an application named 'local'
-_app            := local
+_app            := $(NDK_PLATFORM_PREFIX)
 _application_mk := $(NDK_APPLICATION_MK)
 NDK_APPS        := $(_app)
 

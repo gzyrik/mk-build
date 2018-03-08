@@ -32,10 +32,15 @@ this-makefile = $(lastword $(MAKEFILE_LIST))
 
 # -----------------------------------------------------------------------------
 # Macro    : local-makefile
-# Returns  : the name of the last parsed Android.mk file
+# Returns  : the name of the last parsed NDK_PLATFORM_MAKEFILE file
 # Usage    : $(local-makefile)
 # -----------------------------------------------------------------------------
-local-makefile = $(lastword $(filter %Android.mk,$(MAKEFILE_LIST)))
+#For compatibility
+ifneq (,$(call lt,$(NDK_NEED_VERSION),12))
+local-makefile = $(lastword $(filter %$(NDK_PLATFORM_MAKEFILE) %$(notdir $(APP_BUILD_SCRIPT)) %Android.mk,$(MAKEFILE_LIST)))
+else
+local-makefile = $(lastword $(filter %$(NDK_PLATFORM_MAKEFILE) %$(notdir $(APP_BUILD_SCRIPT)),$(MAKEFILE_LIST)))
+endif
 
 # -----------------------------------------------------------------------------
 # Function : assert-defined
@@ -405,9 +410,21 @@ modules-LOCALS := \
     FILTER_ASM \
     CPP_FEATURES \
     SHORT_COMMANDS \
+    ASM_CONVERSION \
+    PACKAGE_RENAME \
+    JAVA_CLASS_PATH \
+    MARK_COVERAGE \
+    OBJC_ARC \
+    INSTALLABLE \
     BUILT_MODULE_NOT_COPIED \
     THIN_ARCHIVE \
     PCH \
+    MINIMUM_GCC_VERSION \
+    MINIMUM_CLANG_VERSION \
+    MINIMUM_PLATFORM \
+    EXPORT_MINIMUM_GCC_VERSION \
+    EXPORT_MINIMUM_CLANG_VERSION \
+    EXPORT_MINIMUM_PLATFORM \
     RENDERSCRIPT_INCLUDES \
     RENDERSCRIPT_INCLUDES_OVERRIDE \
     RENDERSCRIPT_FLAGS \
@@ -500,9 +517,8 @@ module-add = \
   $(if $(strip $(__ndk_import_depth)),,\
     $(eval __ndk_top_modules := $(call set_insert,$(__ndk_top_modules),$1))\
   )\
-  $(if $(call module-class-is-installable,$(LOCAL_MODULE_CLASS)),\
-    $(eval LOCAL_INSTALLED := $(NDK_APP_DST_DIR)/$(notdir $(LOCAL_BUILT_MODULE))),\
-    $(eval LOCAL_INSTALLED := $(LOCAL_BUILT_MODULE))\
+  $(if $(call module-class-is-installable,$(LOCAL_MODULE_CLASS))$(LOCAL_INSTALLABLE),\
+    $(eval LOCAL_INSTALLED := $(if $(filter %JAVA_LIBRARY,$(LOCAL_MODULE_CLASS)),$(NDK_APP_LIBS_OUT),$(NDK_APP_DST_DIR))/$(notdir $(LOCAL_BUILT_MODULE)))\
   )\
   $(foreach __field,STATIC_LIBRARIES WHOLE_STATIC_LIBRARIES SHARED_LIBRARIES,\
     $(eval LOCAL_$(__field) := $(call strip-lib-prefix,$(LOCAL_$(__field)))))\
@@ -522,7 +538,7 @@ module-get-built = $(__ndk_modules.$1.BUILT_MODULE)
 # An installable module is one that will be copied to $PROJECT/libs/<abi>/
 # (e.g. shared libraries).
 #
-module-is-installable = $(call module-class-is-installable,$(call module-get-class,$1))
+module-is-installable = $(call module-class-is-installable,$(call module-get-class,$1))$(__ndk_modules.$1.INSTALLABLE)
 
 # Returns $(true) if module $1 is a copyable prebuilt
 # A copyable prebuilt module is one that will be copied to $NDK_OUT/<abi>/
@@ -640,6 +656,11 @@ module-is-shared-library = $(strip \
   $(filter SHARED_LIBRARY PREBUILT_SHARED_LIBRARY,\
     $(call module-get-class,$1)))
 
+# Returns non-empty if a module is a java library
+module-is-java-library = $(strip \
+  $(filter JAVA_LIBRARY PREBUILT_JAVA_LIBRARY,\
+    $(call module-get-class,$1)))
+
 # -----------------------------------------------------------------------------
 # Filter a list of module names to retain only the static libraries.
 # Arguments: 1: module name list
@@ -689,13 +710,14 @@ module-get-shared-libs = $(__ndk_modules.$1.SHARED_LIBRARIES)
 # This is the concatenation of its LOCAL_STATIC_LIBRARIES,
 # LOCAL_WHOLE_STATIC_LIBRARIES, and LOCAL_SHARED_LIBRARIES variables.
 # Arguments: 1: module name
+#            2: include whole_static_libraries
 # Returns     : List of library modules (static or shared).
 # -----------------------------------------------------------------------------
 module-get-direct-libs = $(strip \
   $(__ndk_modules.$1.STATIC_LIBRARIES) \
-  $(__ndk_modules.$1.WHOLE_STATIC_LIBRARIES) \
+  $(if $2,$(__ndk_modules.$1.WHOLE_STATIC_LIBRARIES)) \
   $(__ndk_modules.$1.SHARED_LIBRARIES))
-
+ 
 
 # -----------------------------------------------------------------------------
 # Computes the full closure of a module and its dependencies. Order is
@@ -732,6 +754,7 @@ module-get-all-dependencies = $(call -ndk-mod-get-closure,$1,module-get-depends)
 #       result returned by this function.
 # -----------------------------------------------------------------------------
 module-get-link-libs = $(strip \
+  $(eval _ndk_mod_static_link := $(call module-is-static-library,$1)) \
   $(eval _ndk_mod_link_module := $1) \
   $(call -ndk-mod-get-topological-depends,$1,-ndk-mod-link-deps))
 
@@ -740,9 +763,10 @@ module-get-link-libs = $(strip \
 #  - if $1 is the link module, or if it is a static library, then all
 #    direct dependencies.
 #  - otherwise, the module is a shared library, don't add build deps.
+#  - only static link, include the whole_static_libraries dependencies of $1
 -ndk-mod-link-deps = \
   $(if $(call seq,$1,$(_ndk_mod_link_module))$(call module-is-static-library,$1),\
-    $(call module-get-direct-libs,$1))
+    $(call module-get-direct-libs,$1,$(call seq,$1,$(_ndk_mod_link_module))$(_ndk_mod_static_link)))
 
 # -----------------------------------------------------------------------------
 # This function is used to extract the list of static libraries that need
@@ -754,7 +778,7 @@ module-get-link-libs = $(strip \
 #            as whole.
 # -----------------------------------------------------------------------------
 module-extract-whole-static-libs = $(strip \
-  $(eval _ndk_mod_whole_all := $(call map,module-get-whole-static-libs,$1 $2))\
+  $(eval _ndk_mod_whole_all := $(call map,module-get-whole-static-libs,$1))\
   $(eval _ndk_mod_whole_result := $(filter $(_ndk_mod_whole_all),$2))\
   $(_ndk_mod_whole_result))
 
@@ -786,6 +810,11 @@ modules-get-all-installable = $(strip \
     $(foreach __alldep,$(call module-get-all-dependencies,$1),\
         $(if $(call module-is-installable,$(__alldep)),$(__alldep))\
     ))
+
+# Returns all built
+modules-get-all-built = $(strip \
+    $(foreach __module,$(__ndk_modules),\
+        $(call module-get-built,$(__module))))
 
 # Return the C++ extension(s) of a given module
 # $1: module name
@@ -892,6 +921,43 @@ module-has-c++-features = $(strip \
     $(if $(filter $2,$(__cxxflags)),true,)\
     )
 
+# Returns true if a module or its dependencies have mark code coverage 
+# (i.e. LOCAL_MARK_COVERAGE is true)
+#
+# $1: module name
+#
+module-has-mark-coverage = $(strip \
+    $(eval __cxxdeps  := $(call module-get-all-dependencies,$1))\
+    $(foreach __cxxdep,$(__cxxdeps),$(__ndk_modules.$(__cxxdep).MARK_COVERAGE)))
+
+# set code coverage mark to a given module
+#
+# $1: module name
+# $2: true or $(empty)
+#
+module-mark-coverage = \
+    $(if $(call strip,$2),$(call ndk_log,Mark coverage to module '$1'))\
+    $(eval __ndk_modules.$1.MARK_COVERAGE := $(2))
+
+# Returns installed file path if a module or its dependencies have mark code coverage 
+# (i.e. LOCAL_MARK_COVERAGE is true)
+#
+# $1: module name
+#
+module-get-coverage-installed = $(if \
+    $(filter EXECUTABLE-true,$(__ndk_modules.$1.MODULE_CLASS)-$(call module-has-mark-coverage,$1)),\
+    $(__ndk_modules.$1.INSTALLED))
+
+# Returns all object dir if a module have mark code coverage
+module-get-all-coverage-objs-dir = $(strip \
+    $(foreach __module,$(__ndk_modules),\
+    $(if $(__ndk_modules.$(__module).MARK_COVERAGE),$(__ndk_modules.$(__module).OBJS_DIR))))
+
+# Returns all local path if a module have mark code coverage
+module-get-all-coverage-local-path = $(strip \
+    $(foreach __module,$(__ndk_modules),\
+    $(if $(__ndk_modules.$(__module).MARK_COVERAGE),$(__ndk_modules.$(__module).PATH))))
+
 # Add standard C++ dependencies to a given module
 #
 # $1: module name
@@ -970,7 +1036,7 @@ check-LOCAL_MODULE_FILENAME = \
         $(call __ndk_info,$(LOCAL_MAKEFILE):$(LOCAL_MODULE): LOCAL_MODULE_FILENAME must not contain spaces)\
         $(call __ndk_error,Plase correct error. Aborting)\
     )\
-    $(if $(filter %$(TARGET_LIB_EXTENSION) %$(TARGET_SONAME_EXTENSION),$(LOCAL_MODULE_FILENAME)),\
+    $(if $(filter %$(TARGET_JAR_EXTENSION) %$(TARGET_LIB_EXTENSION) %$(TARGET_SONAME_EXTENSION),$(LOCAL_MODULE_FILENAME)),\
         $(call __ndk_info,$(LOCAL_MAKEFILE):$(LOCAL_MODULE): LOCAL_MODULE_FILENAME should not include file extensions)\
     )\
   )
@@ -997,7 +1063,7 @@ ifneq (1,$$(words $$(LOCAL_MODULE_FILENAME)))
     $$(call __ndk_info,$$(LOCAL_MAKEFILE):$$(LOCAL_MODULE): LOCAL_MODULE_FILENAME must not contain any space)
     $$(call __ndk_error,Aborting)
 endif
-ifneq (,$$(filter %$$(TARGET_LIB_EXTENSION) %$$(TARGET_SONAME_EXTENSION),$$(LOCAL_MODULE_FILENAME)))
+ifneq (,$$(filter %$$(TARGET_JAR_EXTENSION) %$$(TARGET_LIB_EXTENSION) %$$(TARGET_SONAME_EXTENSION),$$(LOCAL_MODULE_FILENAME)))
     $$(call __ndk_info,$$(LOCAL_MAKEFILE):$$(LOCAL_MODULE): LOCAL_MODULE_FILENAME must not contain a file extension)
     $$(call __ndk_error,Aborting)
 endif
@@ -1051,7 +1117,7 @@ endef
 #             binary file, and the directory where to place its object files.
 # -----------------------------------------------------------------------------
 handle-module-built = \
-    $(eval LOCAL_BUILT_MODULE := $(TARGET_OUT)/$(LOCAL_MODULE_FILENAME))\
+    $(eval LOCAL_BUILT_MODULE := $(TARGET_OBJS)/$(LOCAL_MODULE_FILENAME))\
     $(eval LOCAL_OBJS_DIR     := $(TARGET_OBJS)/$(LOCAL_MODULE))
 
 # -----------------------------------------------------------------------------
@@ -1088,10 +1154,17 @@ my-dir = $(call parent-dir,$(lastword $(MAKEFILE_LIST)))
 # -----------------------------------------------------------------------------
 # Function : all-makefiles-under
 # Arguments: 1: directory path
+# Arguments: 3: subdir name, default is *
 # Returns  : a list of all makefiles immediately below some directory
 # Usage    : $(call all-makefiles-under, <some path>)
 # -----------------------------------------------------------------------------
-all-makefiles-under = $(wildcard $1/*/Android.mk)
+#For compatibility
+ifneq (,$(call lt,$(NDK_NEED_VERSION),12))
+all-makefiles-under = $(wildcard $1/$2/$(NDK_PLATFORM_MAKEFILE))\
+    $(if $(filter-out Android.mk,$(NDK_PLATFORM_MAKEFILE)),$(wildcard $1/$2/Android.mk))
+else
+all-makefiles-under = $(wildcard $1/$2/$(NDK_PLATFORM_MAKEFILE))
+endif
 
 # -----------------------------------------------------------------------------
 # Macro    : all-subdir-makefiles
@@ -1099,7 +1172,7 @@ all-makefiles-under = $(wildcard $1/*/Android.mk)
 #            location
 # Usage    : $(all-subdir-makefiles)
 # -----------------------------------------------------------------------------
-all-subdir-makefiles = $(call all-makefiles-under,$(call my-dir))
+all-subdir-makefiles = $(call all-makefiles-under,$(call my-dir),*)
 
 # =============================================================================
 #
@@ -1140,6 +1213,13 @@ all-subdir-makefiles = $(call all-makefiles-under,$(call my-dir))
 # =============================================================================
 
 # -----------------------------------------------------------------------------
+# Macro    : escape-colon-in-path
+# Returns  : replace colon in $1 with $(colon)
+# Usage    : $(escape-colon-in-path,<file>)
+# -----------------------------------------------------------------------------
+escape-colon-in-path = $(subst $(colon),$$(colon),$1)
+
+# -----------------------------------------------------------------------------
 # Macro    : clear-all-src-tags
 # Returns  : remove all source file tags and associated data.
 # Usage    : $(clear-all-src-tags)
@@ -1149,9 +1229,9 @@ $(foreach __tag,$(LOCAL_SRC_TAGS), \
     $(eval LOCAL_SRC_TAG.$(__tag) := $(empty)) \
 ) \
 $(foreach __src,$(LOCAL_SRC_FILES), \
-    $(eval LOCAL_SRC_FILES_TAGS.$(__src) := $(empty)) \
-    $(eval LOCAL_SRC_FILES_TARGET_CFLAGS.$(__src) := $(empty)) \
-    $(eval LOCAL_SRC_FILES_TEXT.$(__src) := $(empty)) \
+    $(eval LOCAL_SRC_FILES_TAGS.$(call escape-colon-in-path,$(__src)) := $(empty)) \
+    $(eval LOCAL_SRC_FILES_TARGET_CFLAGS.$(call escape-colon-in-path,$(__src)) := $(empty)) \
+    $(eval LOCAL_SRC_FILES_TEXT.$(call escape-colon-in-path,$(__src)) := $(empty)) \
 ) \
 $(eval LOCAL_SRC_TAGS := $(empty_set))
 
@@ -1166,7 +1246,7 @@ tag-src-files = \
 $(eval LOCAL_SRC_TAGS := $(call set_insert,$2,$(LOCAL_SRC_TAGS))) \
 $(eval LOCAL_SRC_TAG.$2 := $(call set_union,$1,$(LOCAL_SRC_TAG.$2))) \
 $(foreach __src,$1, \
-    $(eval LOCAL_SRC_FILES_TAGS.$(__src) += $2) \
+    $(eval LOCAL_SRC_FILES_TAGS.$(call escape-colon-in-path,$(__src)) += $2) \
 )
 
 # -----------------------------------------------------------------------------
@@ -1195,7 +1275,8 @@ get-src-files-without-tag = $(filter-out $(LOCAL_SRC_TAG.$1),$(LOCAL_SRC_FILES))
 #            normally be called from the toolchain-specific function that
 #            computes all compiler flags for all source files.
 # -----------------------------------------------------------------------------
-set-src-files-target-cflags = $(foreach __src,$1,$(eval LOCAL_SRC_FILES_TARGET_CFLAGS.$(__src) := $2))
+set-src-files-target-cflags = \
+    $(foreach __src,$1,$(eval LOCAL_SRC_FILES_TARGET_CFLAGS.$(call escape-colon-in-path,$(__src)) := $2))
 
 # -----------------------------------------------------------------------------
 # Macro    : add-src-files-target-cflags
@@ -1206,7 +1287,8 @@ set-src-files-target-cflags = $(foreach __src,$1,$(eval LOCAL_SRC_FILES_TARGET_C
 #            to append, instead of replace, compiler flags for specific
 #            source files.
 # -----------------------------------------------------------------------------
-add-src-files-target-cflags = $(foreach __src,$1,$(eval LOCAL_SRC_FILES_TARGET_CFLAGS.$(__src) += $2))
+add-src-files-target-cflags = \
+    $(foreach __src,$1,$(eval LOCAL_SRC_FILES_TARGET_CFLAGS.$(call escape-colon-in-path,$(__src)) += $2))
 
 # -----------------------------------------------------------------------------
 # Macro    : get-src-file-target-cflags
@@ -1229,7 +1311,8 @@ get-src-file-target-cflags = $(LOCAL_SRC_FILES_TARGET_CFLAGS.$1)
 #            ARM-based toolchains. This function must be called by the
 #            toolchain-specific functions that processes all source files.
 # -----------------------------------------------------------------------------
-set-src-files-text = $(foreach __src,$1,$(eval LOCAL_SRC_FILES_TEXT.$(__src) := $2))
+set-src-files-text = \
+    $(foreach __src,$1,$(eval LOCAL_SRC_FILES_TEXT.$(call escape-colon-in-path,$(__src)) := $2))
 
 # -----------------------------------------------------------------------------
 # Macro    : get-src-file-text
@@ -1291,7 +1374,7 @@ get-object-name = $(strip \
     $(subst ../,__/,\
       $(subst :,_,\
         $(eval __obj := $1)\
-        $(foreach __ext,.c .s .S .asm $(LOCAL_CPP_EXTENSION) $(LOCAL_RS_EXTENSION),\
+        $(foreach __ext,.c .s .S .m .asm $(LOCAL_CPP_EXTENSION) $(LOCAL_RS_EXTENSION),\
             $(eval __obj := $(__obj:%$(__ext)=%$(TARGET_OBJ_EXTENSION)))\
         )\
         $(__obj)\
@@ -1423,7 +1506,7 @@ $$(_OBJ): PRIVATE_TEXT     := $$(_TEXT)
 $$(_OBJ): PRIVATE_CC       := $$(_CC)
 $$(_OBJ): PRIVATE_CFLAGS   := $$(_FLAGS)
 
-ifeq ($$(LOCAL_SHORT_COMMANDS),true)
+ifneq (,$$(filter cc,$$(LOCAL_SHORT_COMMANDS)))
 _OPTIONS_LISTFILE := $$(_OBJ).cflags
 $$(_OBJ): $$(call generate-list-file,$$(_FLAGS),$$(_OPTIONS_LISTFILE))
 $$(_OBJ): PRIVATE_CFLAGS := @$$(call host-path,$$(_OPTIONS_LISTFILE))
@@ -1449,6 +1532,7 @@ endef
 # _CXX: 'compiler' command for _CPP_SRC
 # _RS_FLAGS: 'compiler' flags for _RS_SRC
 # _CPP_FLAGS: 'compiler' flags for _CPP_SRC
+# _LD_FLAGS: 'compiler' flags for linking
 # _TEXT: Display text (e.g. "Compile RS")
 # _OUT: output dir
 # _COMPAT: 'true' if bcc_compat is required
@@ -1469,11 +1553,12 @@ $$(_OBJ): PRIVATE_RS_BCC    := $$(_RS_BCC)
 $$(_OBJ): PRIVATE_CXX       := $$(_CXX)
 $$(_OBJ): PRIVATE_RS_FLAGS  := $$(_RS_FLAGS)
 $$(_OBJ): PRIVATE_CPPFLAGS  := $$(_CPP_FLAGS)
+$$(_OBJ): PRIVATE_LDFLAGS   := $$(_LD_FLAGS)
 $$(_OBJ): PRIVATE_OUT       := $$(NDK_APP_DST_DIR)
 $$(_OBJ): PRIVATE_RS_TRIPLE := $$(RS_TRIPLE)
 $$(_OBJ): PRIVATE_COMPAT    := $$(_COMPAT)
 
-ifeq ($$(LOCAL_SHORT_COMMANDS),true)
+ifneq (,$$(filter rs,$$(LOCAL_SHORT_COMMANDS)))
 _OPTIONS_LISTFILE := $$(_OBJ).cflags
 $$(_OBJ): $$(call generate-list-file,$$(_CPP_FLAGS),$$(_OPTIONS_LISTFILE))
 $$(_OBJ): PRIVATE_CPPFLAGS := @$$(call host-path,$$(_OPTIONS_LISTFILE))
@@ -1487,17 +1572,17 @@ ifeq ($$(_COMPAT),true)
 $$(_OBJ): $$(_RS_SRC) $$(LOCAL_MAKEFILE) $$(NDK_APP_APPLICATION_MK) $$(NDK_DEPENDENCIES_CONVERTER)
 	$$(call host-echo-build-step,$$(PRIVATE_ABI),$$(PRIVATE_TEXT)) "$$(PRIVATE_MODULE) <= $$(notdir $$(PRIVATE_RS_SRC))"
 	$$(hide) \
-	cd $$(call host-path,$$(dir $$(PRIVATE_RS_SRC))) && $$(PRIVATE_RS_CC) -o $$(call host-path,$$(abspath $$(dir $$(PRIVATE_OBJ))))/ -d $$(abspath $$(call host-path,$$(dir $$(PRIVATE_OBJ)))) -MD -reflect-c++ $$(PRIVATE_RS_FLAGS) $$(notdir $$(PRIVATE_RS_SRC))
+	cd $$(call host-path,$$(dir $$(PRIVATE_RS_SRC))) && $$(PRIVATE_RS_CC) -o $$(call host-path,$$(abspath $$(dir $$(PRIVATE_OBJ))))/ -d $$(abspath $$(call host-path,$$(dir $$(PRIVATE_OBJ)))) -MD -reflect-c++ -target-api $(strip $(subst android-,,$(APP_PLATFORM))) $$(PRIVATE_RS_FLAGS) $$(notdir $$(PRIVATE_RS_SRC))
 	$$(hide) \
 	$$(PRIVATE_RS_BCC) -O3 -o $$(call host-path,$$(PRIVATE_BC_OBJ)) -fPIC -shared -rt-path $$(call host-path,$(SYSROOT_LINK)/usr/lib/rs/libclcore.bc) -mtriple $$(PRIVATE_RS_TRIPLE) $$(call host-path,$$(PRIVATE_BC_SRC)) && \
-	$$(PRIVATE_CXX) -shared -Wl,-soname,librs.$$(PRIVATE_BC_SO) -nostdlib $$(call host-path,$$(PRIVATE_BC_OBJ)) $$(call host-path,$(SYSROOT_LINK)/usr/lib/rs/libcompiler_rt.a) -o $$(call host-path,$$(PRIVATE_OUT)/librs.$$(PRIVATE_BC_SO)) -L $$(call host-path,$(SYSROOT_LINK)/usr/lib) -L $$(call host-path,$(SYSROOT_LINK)/usr/lib/rs) -lRSSupport -lm -lc && \
+	$$(PRIVATE_CXX) -shared -Wl,-soname,librs.$$(PRIVATE_BC_SO) -nostdlib $$(call host-path,$$(PRIVATE_BC_OBJ)) $$(call host-path,$(SYSROOT_LINK)/usr/lib/rs/libcompiler_rt.a) -o $$(call host-path,$$(PRIVATE_OUT)/librs.$$(PRIVATE_BC_SO)) -L $$(call host-path,$(SYSROOT_LINK)/usr/lib) -L $$(call host-path,$(SYSROOT_LINK)/usr/lib/rs) $$(PRIVATE_LDFLAGS) -lRSSupport -lm -lc && \
 	$$(PRIVATE_CXX) -MMD -MP -MF $$(call convert-deps,$$(PRIVATE_DEPS)) $$(PRIVATE_CPPFLAGS) $$(call host-path,$$(PRIVATE_CPP_SRC)) -o $$(call host-path,$$(PRIVATE_OBJ)) \
 	$$(call cmd-convert-deps,$$(PRIVATE_DEPS))
 else
 $$(_OBJ): $$(_RS_SRC) $$(LOCAL_MAKEFILE) $$(NDK_APP_APPLICATION_MK) $$(NDK_DEPENDENCIES_CONVERTER)
 	$$(call host-echo-build-step,$$(PRIVATE_ABI),$$(PRIVATE_TEXT)) "$$(PRIVATE_MODULE) <= $$(notdir $$(PRIVATE_RS_SRC))"
 	$$(hide) \
-	cd $$(call host-path,$$(dir $$(PRIVATE_RS_SRC))) && $$(PRIVATE_RS_CC) -o $$(call host-path,$$(abspath $$(dir $$(PRIVATE_OBJ))))/ -d $$(abspath $$(call host-path,$$(dir $$(PRIVATE_OBJ)))) -MD -reflect-c++ $$(PRIVATE_RS_FLAGS) $$(notdir $$(PRIVATE_RS_SRC))
+	cd $$(call host-path,$$(dir $$(PRIVATE_RS_SRC))) && $$(PRIVATE_RS_CC) -o $$(call host-path,$$(abspath $$(dir $$(PRIVATE_OBJ))))/ -d $$(abspath $$(call host-path,$$(dir $$(PRIVATE_OBJ)))) -MD -reflect-c++ -target-api $(strip $(subst android-,,$(APP_PLATFORM))) $$(PRIVATE_RS_FLAGS) $$(notdir $$(PRIVATE_RS_SRC))
 	$$(hide) \
 	$$(PRIVATE_CXX) -MMD -MP -MF $$(call convert-deps,$$(PRIVATE_DEPS)) $$(PRIVATE_CPPFLAGS) $$(call host-path,$$(PRIVATE_CPP_SRC)) -o $$(call host-path,$$(PRIVATE_OBJ)) \
 	$$(call cmd-convert-deps,$$(PRIVATE_DEPS))
@@ -1584,8 +1669,7 @@ endef
 #             2: target object file (without path)
 # Returns   : None
 # Usage     : $(eval $(call ev-compile-c-source,<srcfile>,<objfile>)
-# Rationale : Internal template evaluated by compile-c-source and
-#             compile-s-source
+# Rationale : Internal template evaluated by compile-c-source
 # -----------------------------------------------------------------------------
 define  ev-compile-c-source
 _SRC:=$$(call local-source-file-path,$(1))
@@ -1622,8 +1706,12 @@ _OBJ:=$$(LOCAL_OBJS_DIR:%/=%)/$(2)
 _FLAGS := $$(call host-c-includes,$$(LOCAL_C_INCLUDES) $$(LOCAL_PATH)) \
           $$(LOCAL_ASMFLAGS) \
           $$(NDK_APP_ASMFLAGS) \
-          $$(call host-c-includes,$$($(my)C_INCLUDES)) \
-          -f elf32 -m x86
+          $$(call host-c-includes,$$($(my)C_INCLUDES))
+ifeq ($$(NDK_PLATFORM_PREFIX), darwin)
+_FLAGS += $$(if $$(filter x86_64, $$(TARGET_ARCH_ABI)), -f macho64, -f fmacho -m x86)
+else
+_FLAGS += $$(if $$(filter x86_64, $$(TARGET_ARCH_ABI)), -f elf64, -f elf32 -m x86)
+endif
 
 _TEXT := Assemble $$(call get-src-file-text,$1)
 _CC   := $$(NDK_CCACHE) $$(TARGET_ASM)
@@ -1636,7 +1724,7 @@ $$(_OBJ): PRIVATE_TEXT     := $$(_TEXT)
 $$(_OBJ): PRIVATE_CC       := $$(_CC)
 $$(_OBJ): PRIVATE_CFLAGS   := $$(_FLAGS)
 
-ifeq ($$(LOCAL_SHORT_COMMANDS),true)
+ifneq (,$$(filter asm,$$(LOCAL_SHORT_COMMANDS)))
 _OPTIONS_LISTFILE := $$(_OBJ).cflags
 $$(_OBJ): $$(call generate-list-file,$$(_FLAGS),$$(_OPTIONS_LISTFILE))
 $$(_OBJ): PRIVATE_CFLAGS := @$$(call host-path,$$(_OPTIONS_LISTFILE))
@@ -1659,6 +1747,69 @@ endef
 # -----------------------------------------------------------------------------
 compile-c-source = $(eval $(call ev-compile-c-source,$1,$2))
 
+
+# -----------------------------------------------------------------------------
+# Template  : ev-compile-m-source
+# Arguments : 1: single C source file name (relative to LOCAL_PATH)
+#             2: target object file (without path)
+# Returns   : None
+# Usage     : $(eval $(call ev-compile-m-source,<srcfile>,<objfile>)
+# Rationale : Internal template evaluated by compile-m-source
+# -----------------------------------------------------------------------------
+define  ev-compile-m-source
+_SRC:=$$(LOCAL_PATH)/$(1)
+_OBJ:=$$(LOCAL_OBJS_DIR)/$(2)
+
+_FLAGS := $$($$(my)CFLAGS) \
+          $$(call get-src-file-target-cflags,$(1)) \
+          $$(call host-c-includes,$$(LOCAL_C_INCLUDES) $$(LOCAL_PATH)) \
+          $$(LOCAL_CFLAGS) \
+          $$(NDK_APP_CFLAGS) \
+          $$(call host-c-includes,$$($(my)C_INCLUDES)) \
+          -c \
+
+_TEXT := Compile $$(call get-src-file-text,$1)
+_CC   := $$(NDK_CCACHE) $$(TARGET_CM)
+
+$$(eval $$(call ev-build-source-file))
+endef
+
+# -----------------------------------------------------------------------------
+# Function  : compile-m-source
+# Arguments : 1: single C source file name (relative to LOCAL_PATH)
+#             2: object file
+# Returns   : None
+# Usage     : $(call compile-m-source,<srcfile>,<objfile>)
+# Rationale : Setup everything required to build a single C source file
+# -----------------------------------------------------------------------------
+compile-m-source = $(eval $(call ev-compile-m-source,$1,$2))
+
+# -----------------------------------------------------------------------------
+# Template  : ev-compile-s-source
+# Arguments : 1: single Assembly source file name (relative to LOCAL_PATH)
+#             2: target object file (without path)
+# Returns   : None
+# Usage     : $(eval $(call ev-compile-s-source,<srcfile>,<objfile>)
+# Rationale : Internal template evaluated by compile-s-source
+# -----------------------------------------------------------------------------
+define  ev-compile-s-source
+_SRC:=$$(LOCAL_PATH)/$(1)
+_OBJ:=$$(LOCAL_OBJS_DIR)/$(2)
+
+_FLAGS := $$($$(my)CFLAGS) \
+          $$(call get-src-file-target-cflags,$(1)) \
+          $$(call host-c-includes,$$(LOCAL_C_INCLUDES) $$(LOCAL_PATH)) \
+          $$(LOCAL_CFLAGS) \
+          $$(NDK_APP_CFLAGS) \
+          $$(call host-c-includes,$$($(my)C_INCLUDES)) \
+          -c \
+
+_TEXT := Assemble $$(call get-src-file-text,$1)
+_CC   := $$(NDK_CCACHE) $$(LOCAL_ASM_CONVERSION) $$(TARGET_AS)
+
+$$(eval $$(call ev-build-source-file))
+endef
+
 # -----------------------------------------------------------------------------
 # Function  : compile-s-source
 # Arguments : 1: single Assembly source file name (relative to LOCAL_PATH)
@@ -1667,7 +1818,7 @@ compile-c-source = $(eval $(call ev-compile-c-source,$1,$2))
 # Usage     : $(call compile-s-source,<srcfile>,<objfile>)
 # Rationale : Setup everything required to build a single Assembly source file
 # -----------------------------------------------------------------------------
-compile-s-source = $(eval $(call ev-compile-c-source,$1,$2))
+compile-s-source = $(eval $(call ev-compile-s-source,$1,$2))
 
 # -----------------------------------------------------------------------------
 # Function  : compile-asm-source
@@ -1752,6 +1903,8 @@ _CPP_FLAGS := $$($$(my)CXXFLAGS) \
           -fno-rtti \
           -c \
 
+_LD_FLAGS := $$(TARGET_LDFLAGS)
+
 _RS_FLAGS := $$(call host-c-includes, $$(LOCAL_RENDERSCRIPT_INCLUDES) $$(LOCAL_PATH)) \
           $$($$(my)RS_FLAGS) \
           $$(LOCAL_RENDERSCRIPT_FLAGS) \
@@ -1779,6 +1932,46 @@ endef
 # Rationale : Setup everything required to build a single RS source file
 # -----------------------------------------------------------------------------
 compile-rs-source = $(eval $(call ev-compile-rs-source,$1,$2,$3,$4,$5,$6))
+
+# -----------------------------------------------------------------------------
+# Template  : ev-compile-mm-source
+# Arguments : 1: single MM source file name (relative to LOCAL_PATH)
+#             2: target object file (without path)
+# Returns   : None
+# Usage     : $(eval $(call ev-compile-mm-source,<srcfile>,<objfile>)
+# Rationale : Internal template evaluated by compile-cpp-source
+# -----------------------------------------------------------------------------
+
+define  ev-compile-mm-source
+_SRC:=$$(LOCAL_PATH)/$(1)
+_OBJ:=$$(LOCAL_OBJS_DIR)/$(2)
+_FLAGS := $$($$(my)CXXFLAGS) \
+          $$(call get-src-file-target-cflags,$(1)) \
+          $$(call host-c-includes, $$(LOCAL_C_INCLUDES) $$(LOCAL_PATH)) \
+          $$(LOCAL_CFLAGS) \
+          $$(LOCAL_CPPFLAGS) \
+          $$(LOCAL_CXXFLAGS) \
+          $$(NDK_APP_CFLAGS) \
+          $$(NDK_APP_CPPFLAGS) \
+          $$(NDK_APP_CXXFLAGS) \
+          $$(call host-c-includes,$$($(my)C_INCLUDES)) \
+          -c \
+
+_CC   := $$(NDK_CCACHE) $$(TARGET_CMM)
+_TEXT := Compile++ $$(call get-src-file-text,$1)
+
+$$(eval $$(call ev-build-source-file))
+endef
+
+# -----------------------------------------------------------------------------
+# Function  : compile-mm-source
+# Arguments : 1: single C++ source file name (relative to LOCAL_PATH)
+#           : 2: object file name
+# Returns   : None
+# Usage     : $(call compile-c-source,<srcfile>)
+# Rationale : Setup everything required to build a single C++ source file
+# -----------------------------------------------------------------------------
+compile-mm-source = $(eval $(call ev-compile-mm-source,$1,$2))
 
 #
 #  Module imports
@@ -1810,10 +2003,10 @@ import-find-module = $(strip \
       $(eval __imported_module :=)\
       $(foreach __import_dir,$(__ndk_import_dirs),\
         $(if $(__imported_module),,\
-          $(call ndk_log,  Probing $(__import_dir)/$1/Android.mk)\
-          $(if $(strip $(wildcard $(__import_dir)/$1/Android.mk)),\
-            $(eval __imported_module := $(__import_dir)/$1)\
-          )\
+          $(call ndk_log,  Probing $(__import_dir)/$1/$(NDK_PLATFORM_MAKEFILE)\
+              $(if $(call lt,$(NDK_NEED_VERSION),12),$(__import_dir)/$1/Android.mk))\
+          $(eval __imported_module := $(firstword \
+              $(call all-makefiles-under,$(__import_dir),$1)))\
         )\
       )\
       $(__imported_module)\
@@ -1850,7 +2043,7 @@ import-module = \
         $(call ndk_log,    Found in $(__imported_path))\
         $(eval __ndk_import_depth := $(__ndk_import_depth)x) \
         $(eval __ndk_import_list := $(call set_insert,$(__ndk_import_list),$(__import_tag)))\
-        $(eval include $(__imported_path)/Android.mk)\
+        $(eval include $(__imported_path))\
         $(eval __ndk_import_depth := $(__ndk_import_depth:%x=%))\
       ,\
         $(call __ndk_info,$(call local-makefile): Cannot find module with tag '$(__import_tag)' in import path)\
@@ -1910,7 +2103,7 @@ module-class-is-installable = $(if $(NDK_MODULE_CLASS.$1.INSTALLABLE),$(true),$(
 
 # Returns $(true) if $1 corresponds to a copyable prebuilt module class
 #
-module-class-is-copyable = $(if $(call seq,$1,PREBUILT_SHARED_LIBRARY),$(true),$(false))
+#module-class-is-copyable = $(if $(call seq,$1,PREBUILT_SHARED_LIBRARY),$(true),$(false))
 
 #
 # Register valid module classes
@@ -1938,6 +2131,16 @@ $(call module-class-register-installable,PREBUILT_SHARED_LIBRARY,,)
 # prebuilt static library
 # <foo> -> <foo> (we assume it is already well-named)
 $(call module-class-register,PREBUILT_STATIC_LIBRARY,,)
+
+# prebuilt java library
+# <foo> -> <foo>  (we assume it is already well-named)
+# it is installable
+$(call module-class-register-installable,PREBUILT_JAVA_LIBRARY,,$(TARGET_JAR_EXTENSION))
+
+# java library
+# <foo> -> <foo>  (we assume it is already well-named)
+# it is installable
+$(call module-class-register-installable,JAVA_LIBRARY,,$(TARGET_JAR_EXTENSION))
 
 #
 # C++ STL support

@@ -45,7 +45,7 @@ host-rm = \
     $(eval __host_rm_files := $(foreach __host_rm_file,$1,$(subst /,\,$(wildcard $(__host_rm_file)))))\
     $(if $(__host_rm_files),del /f/q $(__host_rm_files) >NUL 2>NUL)
 else
-host-rm = rm -f $1
+host-rm = $(if $(strip $1),rm -f $1)
 endif
 
 # -----------------------------------------------------------------------------
